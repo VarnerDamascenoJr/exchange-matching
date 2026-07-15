@@ -21,6 +21,11 @@ enum OrderStatus {
   REJECTED
 }
 
+enum TradeFeeAsset {
+  BTC
+  USD
+}
+
 model User {
   id        String   @id @default(cuid())
   username  String   @unique @db.VarChar(50)
@@ -51,6 +56,10 @@ model Order {
   sequence       BigInt      @unique @default(autoincrement())
   userId         String      @map("user_id")
   user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  makerTrades    Trade[]     @relation("MakerTrades")
+  takerTrades    Trade[]     @relation("TakerTrades")
+  buyTrades      Trade[]     @relation("BuyTrades")
+  sellTrades     Trade[]     @relation("SellTrades")
   side           OrderSide
   status         OrderStatus
   price          Decimal     @db.Decimal(28, 8)
@@ -63,4 +72,34 @@ model Order {
   @@index([side, status, price(sort: Desc), sequence(sort: Asc)], map: "orders_matching_buy_idx")
   @@index([userId, status, createdAt(sort: Desc)], map: "orders_user_status_created_at_idx")
   @@map("orders")
+}
+
+model Trade {
+  id             String        @id @default(cuid())
+  sequence       BigInt        @unique @default(autoincrement())
+  makerOrderId   String        @map("maker_order_id")
+  makerOrder     Order         @relation("MakerTrades", fields: [makerOrderId], references: [id], onDelete: Cascade)
+  takerOrderId   String        @map("taker_order_id")
+  takerOrder     Order         @relation("TakerTrades", fields: [takerOrderId], references: [id], onDelete: Cascade)
+  buyOrderId     String        @map("buy_order_id")
+  buyOrder       Order         @relation("BuyTrades", fields: [buyOrderId], references: [id], onDelete: Cascade)
+  sellOrderId    String        @map("sell_order_id")
+  sellOrder      Order         @relation("SellTrades", fields: [sellOrderId], references: [id], onDelete: Cascade)
+  takerSide      OrderSide     @map("taker_side")
+  makerFeeRate   Decimal       @db.Decimal(10, 8) @map("maker_fee_rate")
+  makerFeeAmount Decimal       @db.Decimal(28, 8) @map("maker_fee_amount")
+  makerFeeAsset  TradeFeeAsset @map("maker_fee_asset")
+  takerFeeRate   Decimal       @db.Decimal(10, 8) @map("taker_fee_rate")
+  takerFeeAmount Decimal       @db.Decimal(28, 8) @map("taker_fee_amount")
+  takerFeeAsset  TradeFeeAsset @map("taker_fee_asset")
+  price          Decimal       @db.Decimal(28, 8)
+  amount         Decimal       @db.Decimal(28, 8)
+  createdAt      DateTime      @default(now()) @map("created_at")
+
+  @@index([makerOrderId], map: "trades_maker_order_id_idx")
+  @@index([takerOrderId], map: "trades_taker_order_id_idx")
+  @@index([buyOrderId, createdAt(sort: Desc)], map: "trades_buy_order_id_created_at_idx")
+  @@index([sellOrderId, createdAt(sort: Desc)], map: "trades_sell_order_id_created_at_idx")
+  @@index([createdAt(sort: Desc), sequence(sort: Desc)], map: "trades_created_at_sequence_idx")
+  @@map("trades")
 }

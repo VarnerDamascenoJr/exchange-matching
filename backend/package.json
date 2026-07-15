@@ -16,7 +16,10 @@
     "start:api:dev": "nest start --watch",
     "start:api:debug": "nest start --debug --watch",
     "start:api:prod": "node dist/main",
+    "start:worker": "node dist/worker",
+    "start:worker:dev": "nest start --watch --entryFile worker",
     "prisma:generate": "prisma generate",
+    "prisma:seed": "ts-node --project tsconfig.json prisma/seed.ts",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
@@ -33,6 +36,7 @@
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/platform-express": "^11.0.1",
     "@prisma/client": "^6.19.3",
+    "bullmq": "^5.80.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "prisma": "^6.19.3",
@@ -80,5 +84,8 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+  },
+  "prisma": {
+    "seed": "npm run prisma:seed"
   }
 }

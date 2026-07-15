@@ -1,6 +1,11 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { OrderSide, OrderStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { OrderMatchingQueueService } from '../queue/order-matching.queue';
 import { OrdersService } from './orders.service';
 
 const buildWallet = (overrides?: {
@@ -19,15 +24,24 @@ const buildWallet = (overrides?: {
   updatedAt: new Date('2026-07-14T15:25:00.000Z'),
 });
 
-const buildOrder = () => ({
-  id: 'order-1',
-  sequence: BigInt(1),
-  userId: 'user-1',
-  side: OrderSide.BUY,
-  status: OrderStatus.QUEUED,
-  price: new Prisma.Decimal('10000'),
-  originalAmount: new Prisma.Decimal('0.5'),
-  remainingAmount: new Prisma.Decimal('0.5'),
+const buildOrder = (overrides?: {
+  id?: string;
+  sequence?: bigint;
+  userId?: string;
+  side?: OrderSide;
+  status?: OrderStatus;
+  price?: string;
+  originalAmount?: string;
+  remainingAmount?: string;
+}) => ({
+  id: overrides?.id ?? 'order-1',
+  sequence: overrides?.sequence ?? BigInt(1),
+  userId: overrides?.userId ?? 'user-1',
+  side: overrides?.side ?? OrderSide.BUY,
+  status: overrides?.status ?? OrderStatus.QUEUED,
+  price: new Prisma.Decimal(overrides?.price ?? '10000'),
+  originalAmount: new Prisma.Decimal(overrides?.originalAmount ?? '0.5'),
+  remainingAmount: new Prisma.Decimal(overrides?.remainingAmount ?? '0.5'),
   createdAt: new Date('2026-07-14T15:30:00.000Z'),
   updatedAt: new Date('2026-07-14T15:30:00.000Z'),
 });
@@ -35,8 +49,10 @@ const buildOrder = () => ({
 describe('OrdersService', () => {
   let ordersService: OrdersService;
   let prismaService: jest.Mocked<PrismaService>;
+  let orderMatchingQueueService: jest.Mocked<OrderMatchingQueueService>;
   let rootOrderFindManyMock: jest.Mock;
   let transactionClient: {
+    $queryRaw: jest.Mock;
     wallet: {
       findUnique: jest.Mock;
       updateMany: jest.Mock;
@@ -46,6 +62,8 @@ describe('OrdersService', () => {
       create: jest.Mock;
       findMany: jest.Mock;
       findFirst: jest.Mock;
+      findUnique: jest.Mock;
+      update: jest.Mock;
       updateMany: jest.Mock;
     };
   };
@@ -54,6 +72,7 @@ describe('OrdersService', () => {
     rootOrderFindManyMock = jest.fn();
 
     transactionClient = {
+      $queryRaw: jest.fn(),
       wallet: {
         findUnique: jest.fn(),
         updateMany: jest.fn(),
@@ -63,6 +82,8 @@ describe('OrdersService', () => {
         create: jest.fn(),
         findMany: jest.fn(),
         findFirst: jest.fn(),
+        findUnique: jest.fn(),
+        update: jest.fn(),
         updateMany: jest.fn(),
       },
     };
@@ -78,7 +99,11 @@ describe('OrdersService', () => {
       ),
     } as unknown as jest.Mocked<PrismaService>;
 
-    ordersService = new OrdersService(prismaService);
+    orderMatchingQueueService = {
+      enqueueProcessOrder: jest.fn(),
+    } as unknown as jest.Mocked<OrderMatchingQueueService>;
+
+    ordersService = new OrdersService(prismaService, orderMatchingQueueService);
   });
 
   it('should create a valid BUY order and reserve USD', async () => {
@@ -119,6 +144,9 @@ describe('OrdersService', () => {
       createdAt: '2026-07-14T15:30:00.000Z',
       updatedAt: '2026-07-14T15:30:00.000Z',
     });
+    expect(orderMatchingQueueService.enqueueProcessOrder.mock.calls).toEqual([
+      ['order-1'],
+    ]);
   });
 
   it('should create a valid SELL order and reserve BTC', async () => {
@@ -153,6 +181,45 @@ describe('OrdersService', () => {
       },
     });
     expect(order.side).toBe(OrderSide.SELL);
+    expect(orderMatchingQueueService.enqueueProcessOrder.mock.calls).toEqual([
+      ['order-1'],
+    ]);
+  });
+
+  it('should reserve BUY funds using values already quantized to 8 decimal places', async () => {
+    transactionClient.wallet.findUnique.mockResolvedValueOnce(buildWallet());
+    transactionClient.wallet.updateMany.mockResolvedValueOnce({ count: 1 });
+    transactionClient.order.create.mockResolvedValueOnce(
+      buildOrder({
+        price: '0.33333333',
+        originalAmount: '0.1',
+        remainingAmount: '0.1',
+      }),
+    );
+
+    await ordersService.createOrder(
+      'user-1',
+      OrderSide.BUY,
+      '0.1',
+      '0.33333333',
+    );
+
+    expect(transactionClient.wallet.updateMany).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-1',
+        availableUsd: {
+          gte: new Prisma.Decimal('0.03333333'),
+        },
+      },
+      data: {
+        availableUsd: {
+          decrement: new Prisma.Decimal('0.03333333'),
+        },
+        reservedUsd: {
+          increment: new Prisma.Decimal('0.03333333'),
+        },
+      },
+    });
   });
 
   it('should reject BUY orders with insufficient USD balance', async () => {
@@ -221,6 +288,57 @@ describe('OrdersService', () => {
     await expect(
       ordersService.createOrder('user-1', OrderSide.BUY, '1', '10000'),
     ).rejects.toThrow(new NotFoundException('Wallet not found'));
+    expect(
+      orderMatchingQueueService.enqueueProcessOrder.mock.calls,
+    ).toHaveLength(0);
+  });
+
+  it('should reject the order and refund funds when queue publishing fails', async () => {
+    transactionClient.wallet.findUnique
+      .mockResolvedValueOnce(buildWallet())
+      .mockResolvedValueOnce(buildWallet());
+    transactionClient.wallet.updateMany.mockResolvedValueOnce({ count: 1 });
+    transactionClient.order.create.mockResolvedValueOnce(buildOrder());
+    transactionClient.$queryRaw.mockResolvedValueOnce([{ id: 'order-1' }]);
+    transactionClient.order.findUnique.mockResolvedValueOnce(buildOrder());
+    transactionClient.order.update.mockResolvedValueOnce({
+      ...buildOrder(),
+      status: OrderStatus.REJECTED,
+    });
+    transactionClient.wallet.update.mockResolvedValueOnce(buildWallet());
+    orderMatchingQueueService.enqueueProcessOrder.mockRejectedValueOnce(
+      new Error('Redis unavailable'),
+    );
+
+    await expect(
+      ordersService.createOrder('user-1', OrderSide.BUY, '0.5', '10000'),
+    ).rejects.toThrow(
+      new ServiceUnavailableException(
+        'Order could not be queued for processing',
+      ),
+    );
+
+    expect(transactionClient.order.update).toHaveBeenCalledWith({
+      where: {
+        id: 'order-1',
+      },
+      data: {
+        status: OrderStatus.REJECTED,
+      },
+    });
+    expect(transactionClient.wallet.update).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-1',
+      },
+      data: {
+        availableUsd: {
+          increment: new Prisma.Decimal('5000'),
+        },
+        reservedUsd: {
+          decrement: new Prisma.Decimal('5000'),
+        },
+      },
+    });
   });
 
   it('should list only active orders for the authenticated user', async () => {
@@ -257,24 +375,20 @@ describe('OrdersService', () => {
   });
 
   it('should cancel a BUY order and release reserved USD', async () => {
+    transactionClient.$queryRaw.mockResolvedValueOnce([{ id: 'order-1' }]);
     transactionClient.order.findFirst.mockResolvedValueOnce(buildOrder());
     transactionClient.wallet.findUnique.mockResolvedValueOnce(buildWallet());
-    transactionClient.order.updateMany.mockResolvedValueOnce({ count: 1 });
+    transactionClient.order.update.mockResolvedValueOnce({
+      ...buildOrder(),
+      status: OrderStatus.CANCELLED,
+    });
     transactionClient.wallet.update.mockResolvedValueOnce(buildWallet());
 
     const order = await ordersService.cancelOrder('user-1', 'order-1');
 
-    expect(transactionClient.order.updateMany).toHaveBeenCalledWith({
+    expect(transactionClient.order.update).toHaveBeenCalledWith({
       where: {
         id: 'order-1',
-        userId: 'user-1',
-        status: {
-          in: [
-            OrderStatus.QUEUED,
-            OrderStatus.OPEN,
-            OrderStatus.PARTIALLY_FILLED,
-          ],
-        },
       },
       data: {
         status: OrderStatus.CANCELLED,
@@ -297,13 +411,26 @@ describe('OrdersService', () => {
   });
 
   it('should cancel a SELL order and release reserved BTC', async () => {
+    transactionClient.$queryRaw.mockResolvedValueOnce([{ id: 'order-1' }]);
     transactionClient.order.findFirst.mockResolvedValueOnce({
-      ...buildOrder(),
+      ...buildOrder({
+        side: OrderSide.SELL,
+        remainingAmount: '0.75',
+      }),
       side: OrderSide.SELL,
       remainingAmount: new Prisma.Decimal('0.75'),
     });
     transactionClient.wallet.findUnique.mockResolvedValueOnce(buildWallet());
-    transactionClient.order.updateMany.mockResolvedValueOnce({ count: 1 });
+    transactionClient.order.update.mockResolvedValueOnce({
+      ...buildOrder({
+        side: OrderSide.SELL,
+        status: OrderStatus.CANCELLED,
+        remainingAmount: '0.75',
+      }),
+      side: OrderSide.SELL,
+      status: OrderStatus.CANCELLED,
+      remainingAmount: new Prisma.Decimal('0.75'),
+    });
     transactionClient.wallet.update.mockResolvedValueOnce(buildWallet());
 
     await ordersService.cancelOrder('user-1', 'order-1');
@@ -324,7 +451,7 @@ describe('OrdersService', () => {
   });
 
   it('should reject cancellation for another user order', async () => {
-    transactionClient.order.findFirst.mockResolvedValueOnce(null);
+    transactionClient.$queryRaw.mockResolvedValueOnce([]);
 
     await expect(
       ordersService.cancelOrder('user-1', 'order-1'),
@@ -332,8 +459,11 @@ describe('OrdersService', () => {
   });
 
   it('should reject repeated cancellation without releasing funds again', async () => {
+    transactionClient.$queryRaw.mockResolvedValueOnce([{ id: 'order-1' }]);
     transactionClient.order.findFirst.mockResolvedValueOnce({
-      ...buildOrder(),
+      ...buildOrder({
+        status: OrderStatus.CANCELLED,
+      }),
       status: OrderStatus.CANCELLED,
     });
 
