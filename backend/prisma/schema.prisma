@@ -1,0 +1,66 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderStatus {
+  QUEUED
+  OPEN
+  PARTIALLY_FILLED
+  FILLED
+  CANCELLED
+  REJECTED
+}
+
+model User {
+  id        String   @id @default(cuid())
+  username  String   @unique @db.VarChar(50)
+  wallet    Wallet?
+  orders    Order[]
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model Wallet {
+  id           String   @id @default(cuid())
+  userId       String   @unique @map("user_id")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  availableBtc Decimal  @db.Decimal(28, 8) @map("available_btc")
+  reservedBtc  Decimal  @db.Decimal(28, 8) @map("reserved_btc")
+  availableUsd Decimal  @db.Decimal(28, 8) @map("available_usd")
+  reservedUsd  Decimal  @db.Decimal(28, 8) @map("reserved_usd")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("wallets")
+}
+
+model Order {
+  id             String      @id @default(cuid())
+  sequence       BigInt      @unique @default(autoincrement())
+  userId         String      @map("user_id")
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  side           OrderSide
+  status         OrderStatus
+  price          Decimal     @db.Decimal(28, 8)
+  originalAmount Decimal     @db.Decimal(28, 8) @map("original_amount")
+  remainingAmount Decimal    @db.Decimal(28, 8) @map("remaining_amount")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  @@index([side, status, price(sort: Asc), sequence(sort: Asc)], map: "orders_matching_sell_idx")
+  @@index([side, status, price(sort: Desc), sequence(sort: Asc)], map: "orders_matching_buy_idx")
+  @@index([userId, status, createdAt(sort: Desc)], map: "orders_user_status_created_at_idx")
+  @@map("orders")
+}
