@@ -1,7 +1,10 @@
 import {
   BadRequestException,
   Injectable,
+  InternalServerErrorException,
+  Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import {
   OrderSide,
@@ -11,6 +14,12 @@ import {
   Wallet,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { OrderMatchingQueueService } from '../queue/order-matching.queue';
+import {
+  DECIMAL_PRECISION,
+  DECIMAL_SCALE,
+  multiplyScaled,
+} from '../common/decimal.utils';
 import { OrderSummary, toOrderSummary } from './order.mapper';
 
 type TransactionClient = Omit<
@@ -20,10 +29,12 @@ type TransactionClient = Omit<
 
 @Injectable()
 export class OrdersService {
-  constructor(private readonly prismaService: PrismaService) {}
+  private readonly logger = new Logger(OrdersService.name);
 
-  private static readonly DECIMAL_PRECISION = 28;
-  private static readonly DECIMAL_SCALE = 8;
+  constructor(
+    private readonly prismaService: PrismaService,
+    private readonly orderMatchingQueueService: OrderMatchingQueueService,
+  ) {}
 
   private readonly activeStatuses = [
     OrderStatus.QUEUED,
@@ -40,30 +51,51 @@ export class OrdersService {
     const amount = this.parsePositiveDecimal(amountInput, 'amount');
     const price = this.parsePositiveDecimal(priceInput, 'price');
 
-    return this.prismaService.$transaction(async (transactionClient) => {
-      const wallet = await transactionClient.wallet.findUnique({
-        where: { userId },
-      });
+    const order = await this.prismaService.$transaction(
+      async (transactionClient) => {
+        const wallet = await transactionClient.wallet.findUnique({
+          where: { userId },
+        });
 
-      if (!wallet) {
-        throw new NotFoundException('Wallet not found');
-      }
+        if (!wallet) {
+          throw new NotFoundException('Wallet not found');
+        }
 
-      await this.reserveFunds(transactionClient, wallet, side, amount, price);
+        await this.reserveFunds(transactionClient, wallet, side, amount, price);
 
-      const order = await transactionClient.order.create({
-        data: {
-          userId,
-          side,
-          status: OrderStatus.QUEUED,
-          price,
-          originalAmount: amount,
-          remainingAmount: amount,
-        },
-      });
+        const order = await transactionClient.order.create({
+          data: {
+            userId,
+            side,
+            status: OrderStatus.QUEUED,
+            price,
+            originalAmount: amount,
+            remainingAmount: amount,
+          },
+        });
 
-      return toOrderSummary(order);
-    });
+        return order;
+      },
+    );
+
+    try {
+      await this.orderMatchingQueueService.enqueueProcessOrder(order.id);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown queue error';
+      this.logger.error(
+        `Created order ${order.id} but failed to enqueue it for processing: ${message}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+
+      await this.rejectQueuedOrder(order.id);
+
+      throw new ServiceUnavailableException(
+        'Order could not be queued for processing',
+      );
+    }
+
+    return toOrderSummary(order);
   }
 
   async getActiveOrders(userId: string): Promise<OrderSummary[]> {
@@ -89,12 +121,11 @@ export class OrdersService {
 
   async cancelOrder(userId: string, orderId: string): Promise<OrderSummary> {
     return this.prismaService.$transaction(async (transactionClient) => {
-      const order = await transactionClient.order.findFirst({
-        where: {
-          id: orderId,
-          userId,
-        },
-      });
+      const order = await this.lockAndLoadOrder(
+        transactionClient,
+        orderId,
+        userId,
+      );
 
       if (!order) {
         throw new NotFoundException('Order not found');
@@ -112,22 +143,14 @@ export class OrdersService {
         throw new NotFoundException('Wallet not found');
       }
 
-      const updatedOrderResult = await transactionClient.order.updateMany({
+      await transactionClient.order.update({
         where: {
           id: orderId,
-          userId,
-          status: {
-            in: [...this.activeStatuses],
-          },
         },
         data: {
           status: OrderStatus.CANCELLED,
         },
       });
-
-      if (updatedOrderResult.count === 0) {
-        throw new BadRequestException('Order cannot be cancelled');
-      }
 
       await this.releaseFunds(transactionClient, order);
 
@@ -185,15 +208,15 @@ export class OrdersService {
     const fractionalDigits = significantFractionalPart.length;
     const totalDigits = integerDigits + fractionalDigits;
 
-    if (fractionalDigits > OrdersService.DECIMAL_SCALE) {
+    if (fractionalDigits > DECIMAL_SCALE) {
       throw new BadRequestException(
-        `${fieldName} must have at most ${OrdersService.DECIMAL_SCALE} decimal places`,
+        `${fieldName} must have at most ${DECIMAL_SCALE} decimal places`,
       );
     }
 
-    if (totalDigits > OrdersService.DECIMAL_PRECISION) {
+    if (totalDigits > DECIMAL_PRECISION) {
       throw new BadRequestException(
-        `${fieldName} must fit within DECIMAL(${OrdersService.DECIMAL_PRECISION},${OrdersService.DECIMAL_SCALE})`,
+        `${fieldName} must fit within DECIMAL(${DECIMAL_PRECISION},${DECIMAL_SCALE})`,
       );
     }
   }
@@ -206,7 +229,7 @@ export class OrdersService {
     price: Prisma.Decimal,
   ) {
     if (side === OrderSide.BUY) {
-      const requiredUsd = amount.mul(price);
+      const requiredUsd = multiplyScaled(amount, price);
       const updatedWallet = await transactionClient.wallet.updateMany({
         where: {
           userId: wallet.userId,
@@ -273,7 +296,7 @@ export class OrdersService {
     },
   ) {
     if (order.side === OrderSide.BUY) {
-      const releasedUsd = order.remainingAmount.mul(order.price);
+      const releasedUsd = multiplyScaled(order.remainingAmount, order.price);
       await transactionClient.wallet.update({
         where: {
           userId: order.userId,
@@ -304,5 +327,74 @@ export class OrdersService {
         },
       },
     });
+  }
+
+  private async rejectQueuedOrder(orderId: string): Promise<void> {
+    await this.prismaService.$transaction(async (transactionClient) => {
+      const order = await this.lockAndLoadOrder(transactionClient, orderId);
+
+      if (!order || order.status !== OrderStatus.QUEUED) {
+        return;
+      }
+
+      const wallet = await transactionClient.wallet.findUnique({
+        where: { userId: order.userId },
+      });
+
+      if (!wallet) {
+        throw new InternalServerErrorException(
+          `Wallet not found for order ${order.id}`,
+        );
+      }
+
+      await transactionClient.order.update({
+        where: {
+          id: order.id,
+        },
+        data: {
+          status: OrderStatus.REJECTED,
+        },
+      });
+
+      await this.releaseFunds(transactionClient, order);
+    });
+  }
+
+  private async lockAndLoadOrder(
+    transactionClient: TransactionClient,
+    orderId: string,
+    userId?: string,
+  ) {
+    const lockedRows = userId
+      ? await transactionClient.$queryRaw<{ id: string }[]>`
+          SELECT "id"
+          FROM "orders"
+          WHERE "id" = ${orderId}
+            AND "user_id" = ${userId}
+          FOR UPDATE
+        `
+      : await transactionClient.$queryRaw<{ id: string }[]>`
+          SELECT "id"
+          FROM "orders"
+          WHERE "id" = ${orderId}
+          FOR UPDATE
+        `;
+
+    if (lockedRows.length === 0) {
+      return null;
+    }
+
+    return userId
+      ? transactionClient.order.findFirst({
+          where: {
+            id: orderId,
+            userId,
+          },
+        })
+      : transactionClient.order.findUnique({
+          where: {
+            id: orderId,
+          },
+        });
   }
 }
