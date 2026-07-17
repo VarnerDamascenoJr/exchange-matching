@@ -6,6 +6,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { OrderMatchingProcessor } from './queue/order-matching.processor';
 import { OrderMatchingWorker } from './queue/order-matching.worker';
 import { QueueModule } from './queue/queue.module';
+import { RealtimeCoreModule } from './realtime/realtime-core.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { QueueModule } from './queue/queue.module';
     PrismaModule,
     MatchingModule,
     QueueModule,
+    RealtimeCoreModule,
   ],
   providers: [OrderMatchingProcessor, OrderMatchingWorker],
 })

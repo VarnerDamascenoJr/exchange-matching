@@ -1,11 +1,12 @@
-import {
-  BadRequestException,
-  NotFoundException,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { OrderSide, OrderStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { OrderMatchingQueueService } from '../queue/order-matching.queue';
+import { OrderMatchingOutboxDispatcherService } from '../queue/order-matching-outbox-dispatcher.service';
+import { OrderMatchingOutboxService } from '../queue/order-matching-outbox.service';
+import { RealtimeOutboxDispatcherService } from '../realtime/realtime-outbox-dispatcher.service';
+import { RealtimeOutboxService } from '../realtime/realtime-outbox.service';
+import { WalletFundsService } from '../wallets/wallet-funds.service';
+import { OrderLockingService } from './order-locking.service';
 import { OrdersService } from './orders.service';
 
 const buildWallet = (overrides?: {
@@ -49,8 +50,14 @@ const buildOrder = (overrides?: {
 describe('OrdersService', () => {
   let ordersService: OrdersService;
   let prismaService: jest.Mocked<PrismaService>;
-  let orderMatchingQueueService: jest.Mocked<OrderMatchingQueueService>;
+  let orderMatchingOutboxService: jest.Mocked<OrderMatchingOutboxService>;
+  let orderMatchingOutboxDispatcherService: jest.Mocked<OrderMatchingOutboxDispatcherService>;
+  let realtimeOutboxService: jest.Mocked<RealtimeOutboxService>;
+  let realtimeOutboxDispatcherService: jest.Mocked<RealtimeOutboxDispatcherService>;
   let rootOrderFindManyMock: jest.Mock;
+  let rootOrderCountMock: jest.Mock;
+  let walletFundsService: WalletFundsService;
+  let orderLockingService: OrderLockingService;
   let transactionClient: {
     $queryRaw: jest.Mock;
     wallet: {
@@ -66,10 +73,14 @@ describe('OrdersService', () => {
       update: jest.Mock;
       updateMany: jest.Mock;
     };
+    orderMatchingOutbox: {
+      create: jest.Mock;
+    };
   };
 
   beforeEach(() => {
     rootOrderFindManyMock = jest.fn();
+    rootOrderCountMock = jest.fn();
 
     transactionClient = {
       $queryRaw: jest.fn(),
@@ -86,10 +97,14 @@ describe('OrdersService', () => {
         update: jest.fn(),
         updateMany: jest.fn(),
       },
+      orderMatchingOutbox: {
+        create: jest.fn(),
+      },
     };
 
     prismaService = {
       order: {
+        count: rootOrderCountMock,
         findMany: rootOrderFindManyMock,
       },
       $transaction: jest.fn(
@@ -99,11 +114,35 @@ describe('OrdersService', () => {
       ),
     } as unknown as jest.Mocked<PrismaService>;
 
-    orderMatchingQueueService = {
-      enqueueProcessOrder: jest.fn(),
-    } as unknown as jest.Mocked<OrderMatchingQueueService>;
+    orderMatchingOutboxService = {
+      appendOrder: jest.fn(),
+    } as unknown as jest.Mocked<OrderMatchingOutboxService>;
 
-    ordersService = new OrdersService(prismaService, orderMatchingQueueService);
+    orderMatchingOutboxDispatcherService = {
+      dispatchPending: jest.fn(),
+    } as unknown as jest.Mocked<OrderMatchingOutboxDispatcherService>;
+
+    realtimeOutboxService = {
+      appendEvent: jest.fn(),
+      appendEvents: jest.fn(),
+    } as unknown as jest.Mocked<RealtimeOutboxService>;
+
+    realtimeOutboxDispatcherService = {
+      dispatchPending: jest.fn(),
+    } as unknown as jest.Mocked<RealtimeOutboxDispatcherService>;
+
+    walletFundsService = new WalletFundsService();
+    orderLockingService = new OrderLockingService();
+
+    ordersService = new OrdersService(
+      prismaService,
+      orderMatchingOutboxService,
+      orderMatchingOutboxDispatcherService,
+      walletFundsService,
+      orderLockingService,
+      realtimeOutboxService,
+      realtimeOutboxDispatcherService,
+    );
   });
 
   it('should create a valid BUY order and reserve USD', async () => {
@@ -144,9 +183,23 @@ describe('OrdersService', () => {
       createdAt: '2026-07-14T15:30:00.000Z',
       updatedAt: '2026-07-14T15:30:00.000Z',
     });
-    expect(orderMatchingQueueService.enqueueProcessOrder.mock.calls).toEqual([
-      ['order-1'],
-    ]);
+    expect(orderMatchingOutboxService.appendOrder).toHaveBeenCalledWith(
+      transactionClient,
+      'order-1',
+    );
+    expect(realtimeOutboxService.appendEvent).toHaveBeenCalledWith(
+      transactionClient,
+      expect.objectContaining({
+        type: 'account.changed',
+        reason: 'order-created',
+        orderId: 'order-1',
+        userId: 'user-1',
+      }),
+    );
+    expect(
+      orderMatchingOutboxDispatcherService.dispatchPending,
+    ).toHaveBeenCalled();
+    expect(realtimeOutboxDispatcherService.dispatchPending).toHaveBeenCalled();
   });
 
   it('should create a valid SELL order and reserve BTC', async () => {
@@ -181,9 +234,10 @@ describe('OrdersService', () => {
       },
     });
     expect(order.side).toBe(OrderSide.SELL);
-    expect(orderMatchingQueueService.enqueueProcessOrder.mock.calls).toEqual([
-      ['order-1'],
-    ]);
+    expect(orderMatchingOutboxService.appendOrder).toHaveBeenCalledWith(
+      transactionClient,
+      'order-1',
+    );
   });
 
   it('should reserve BUY funds using values already quantized to 8 decimal places', async () => {
@@ -288,60 +342,30 @@ describe('OrdersService', () => {
     await expect(
       ordersService.createOrder('user-1', OrderSide.BUY, '1', '10000'),
     ).rejects.toThrow(new NotFoundException('Wallet not found'));
-    expect(
-      orderMatchingQueueService.enqueueProcessOrder.mock.calls,
-    ).toHaveLength(0);
+    expect(orderMatchingOutboxService.appendOrder).not.toHaveBeenCalled();
   });
 
-  it('should reject the order and refund funds when queue publishing fails', async () => {
-    transactionClient.wallet.findUnique
-      .mockResolvedValueOnce(buildWallet())
-      .mockResolvedValueOnce(buildWallet());
+  it('should preserve the queued order when matching outbox dispatch fails', async () => {
+    transactionClient.wallet.findUnique.mockResolvedValueOnce(buildWallet());
     transactionClient.wallet.updateMany.mockResolvedValueOnce({ count: 1 });
     transactionClient.order.create.mockResolvedValueOnce(buildOrder());
-    transactionClient.$queryRaw.mockResolvedValueOnce([{ id: 'order-1' }]);
-    transactionClient.order.findUnique.mockResolvedValueOnce(buildOrder());
-    transactionClient.order.update.mockResolvedValueOnce({
-      ...buildOrder(),
-      status: OrderStatus.REJECTED,
-    });
-    transactionClient.wallet.update.mockResolvedValueOnce(buildWallet());
-    orderMatchingQueueService.enqueueProcessOrder.mockRejectedValueOnce(
+    orderMatchingOutboxDispatcherService.dispatchPending.mockRejectedValueOnce(
       new Error('Redis unavailable'),
     );
 
     await expect(
       ordersService.createOrder('user-1', OrderSide.BUY, '0.5', '10000'),
-    ).rejects.toThrow(
-      new ServiceUnavailableException(
-        'Order could not be queued for processing',
-      ),
-    );
+    ).resolves.toMatchObject({ id: 'order-1', status: OrderStatus.QUEUED });
 
-    expect(transactionClient.order.update).toHaveBeenCalledWith({
-      where: {
-        id: 'order-1',
-      },
-      data: {
-        status: OrderStatus.REJECTED,
-      },
-    });
-    expect(transactionClient.wallet.update).toHaveBeenCalledWith({
-      where: {
-        userId: 'user-1',
-      },
-      data: {
-        availableUsd: {
-          increment: new Prisma.Decimal('5000'),
-        },
-        reservedUsd: {
-          decrement: new Prisma.Decimal('5000'),
-        },
-      },
-    });
+    expect(transactionClient.order.update).not.toHaveBeenCalled();
+    expect(transactionClient.wallet.update).not.toHaveBeenCalled();
+    expect(
+      orderMatchingOutboxDispatcherService.dispatchPending,
+    ).toHaveBeenCalled();
   });
 
   it('should list only active orders for the authenticated user', async () => {
+    rootOrderCountMock.mockResolvedValueOnce(2);
     rootOrderFindManyMock.mockResolvedValueOnce([
       buildOrder(),
       {
@@ -352,8 +376,23 @@ describe('OrdersService', () => {
       },
     ]);
 
-    const orders = await ordersService.getActiveOrders('user-1');
+    const orders = await ordersService.getActiveOrders('user-1', {
+      page: 1,
+      pageSize: 25,
+    });
 
+    expect(rootOrderCountMock).toHaveBeenCalledWith({
+      where: {
+        userId: 'user-1',
+        status: {
+          in: [
+            OrderStatus.QUEUED,
+            OrderStatus.OPEN,
+            OrderStatus.PARTIALLY_FILLED,
+          ],
+        },
+      },
+    });
     expect(rootOrderFindManyMock.mock.calls).toEqual([
       [
         {
@@ -368,10 +407,13 @@ describe('OrdersService', () => {
             },
           },
           orderBy: [{ createdAt: 'desc' }, { sequence: 'desc' }],
+          skip: 0,
+          take: 25,
         },
       ],
     ]);
-    expect(orders).toHaveLength(2);
+    expect(orders.items).toHaveLength(2);
+    expect(orders.pagination.totalItems).toBe(2);
   });
 
   it('should cancel a BUY order and release reserved USD', async () => {
@@ -407,6 +449,23 @@ describe('OrdersService', () => {
         },
       },
     });
+    expect(realtimeOutboxService.appendEvents).toHaveBeenCalledWith(
+      transactionClient,
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'market.changed',
+          reason: 'order-cancelled',
+          orderId: 'order-1',
+        }),
+        expect.objectContaining({
+          type: 'account.changed',
+          reason: 'order-cancelled',
+          orderId: 'order-1',
+          userId: 'user-1',
+        }),
+      ]),
+    );
+    expect(realtimeOutboxDispatcherService.dispatchPending).toHaveBeenCalled();
     expect(order.status).toBe(OrderStatus.CANCELLED);
   });
 
@@ -448,6 +507,22 @@ describe('OrdersService', () => {
         },
       },
     });
+    expect(realtimeOutboxService.appendEvents).toHaveBeenCalledWith(
+      transactionClient,
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'market.changed',
+          reason: 'order-cancelled',
+          orderId: 'order-1',
+        }),
+        expect.objectContaining({
+          type: 'account.changed',
+          reason: 'order-cancelled',
+          orderId: 'order-1',
+          userId: 'user-1',
+        }),
+      ]),
+    );
   });
 
   it('should reject cancellation for another user order', async () => {
@@ -471,5 +546,6 @@ describe('OrdersService', () => {
       ordersService.cancelOrder('user-1', 'order-1'),
     ).rejects.toThrow(new BadRequestException('Order cannot be cancelled'));
     expect(transactionClient.wallet.update).not.toHaveBeenCalled();
+    expect(realtimeOutboxService.appendEvents).not.toHaveBeenCalled();
   });
 });

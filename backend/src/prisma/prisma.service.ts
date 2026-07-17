@@ -19,7 +19,7 @@ export class PrismaService
   }
 
   async onModuleInit() {
-    if (this.configService.get<string>('NODE_ENV') === 'test') {
+    if (!this.shouldConnect()) {
       return;
     }
 
@@ -28,11 +28,18 @@ export class PrismaService
   }
 
   async onModuleDestroy() {
-    if (this.configService.get<string>('NODE_ENV') === 'test') {
+    if (!this.shouldConnect()) {
       return;
     }
 
     await this.$disconnect();
     this.logger.log('Disconnected Prisma client');
+  }
+
+  private shouldConnect(): boolean {
+    return (
+      this.configService.get<string>('NODE_ENV') !== 'test' ||
+      this.configService.get<boolean>('RUN_DATABASE_E2E') === true
+    );
   }
 }

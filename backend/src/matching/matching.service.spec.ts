@@ -1,7 +1,13 @@
 import { NotFoundException } from '@nestjs/common';
 import { OrderSide, OrderStatus, Prisma, TradeFeeAsset } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { RealtimeOutboxDispatcherService } from '../realtime/realtime-outbox-dispatcher.service';
+import { RealtimeOutboxService } from '../realtime/realtime-outbox.service';
+import { OrderLockingService } from '../orders/order-locking.service';
+import { MatchingOrderBookService } from './matching-order-book.service';
 import { MatchingService } from './matching.service';
+import { TradeSettlementService } from './trade-settlement.service';
+import { WalletFundsService } from '../wallets/wallet-funds.service';
 
 const buildOrder = (overrides?: {
   id?: string;
@@ -46,6 +52,12 @@ const buildWallet = (overrides?: {
 describe('MatchingService', () => {
   let matchingService: MatchingService;
   let prismaService: jest.Mocked<PrismaService>;
+  let realtimeOutboxService: jest.Mocked<RealtimeOutboxService>;
+  let realtimeOutboxDispatcherService: jest.Mocked<RealtimeOutboxDispatcherService>;
+  let matchingOrderBookService: MatchingOrderBookService;
+  let orderLockingService: OrderLockingService;
+  let tradeSettlementService: TradeSettlementService;
+  let walletFundsService: WalletFundsService;
   let transactionClient: {
     $queryRaw: jest.Mock;
     order: {
@@ -54,6 +66,7 @@ describe('MatchingService', () => {
       update: jest.Mock;
     };
     wallet: {
+      findUnique: jest.Mock;
       findMany: jest.Mock;
       update: jest.Mock;
     };
@@ -71,6 +84,7 @@ describe('MatchingService', () => {
         update: jest.fn(),
       },
       wallet: {
+        findUnique: jest.fn(),
         findMany: jest.fn(),
         update: jest.fn(),
       },
@@ -78,6 +92,7 @@ describe('MatchingService', () => {
         create: jest.fn(),
       },
     };
+    transactionClient.$queryRaw.mockResolvedValue([{ id: 'order-1' }]);
 
     prismaService = {
       $transaction: jest.fn(
@@ -87,7 +102,29 @@ describe('MatchingService', () => {
       ),
     } as unknown as jest.Mocked<PrismaService>;
 
-    matchingService = new MatchingService(prismaService);
+    realtimeOutboxService = {
+      appendEvent: jest.fn(),
+      appendEvents: jest.fn(),
+    } as unknown as jest.Mocked<RealtimeOutboxService>;
+
+    realtimeOutboxDispatcherService = {
+      dispatchPending: jest.fn(),
+    } as unknown as jest.Mocked<RealtimeOutboxDispatcherService>;
+
+    matchingOrderBookService = new MatchingOrderBookService();
+    orderLockingService = new OrderLockingService();
+    tradeSettlementService = new TradeSettlementService();
+    walletFundsService = new WalletFundsService();
+
+    matchingService = new MatchingService(
+      prismaService,
+      matchingOrderBookService,
+      orderLockingService,
+      tradeSettlementService,
+      realtimeOutboxService,
+      realtimeOutboxDispatcherService,
+      walletFundsService,
+    );
   });
 
   it('should move a queued order to OPEN when there is no compatible maker', async () => {
@@ -110,6 +147,23 @@ describe('MatchingService', () => {
         },
       ],
     ]);
+    expect(realtimeOutboxService.appendEvents).toHaveBeenCalledWith(
+      transactionClient,
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'market.changed',
+          reason: 'order-opened',
+          orderId: 'order-1',
+        }),
+        expect.objectContaining({
+          type: 'account.changed',
+          reason: 'order-opened',
+          orderId: 'order-1',
+          userId: 'user-1',
+        }),
+      ]),
+    );
+    expect(realtimeOutboxDispatcherService.dispatchPending).toHaveBeenCalled();
   });
 
   it('should fully match a BUY taker using maker price and refund price improvement', async () => {
@@ -154,6 +208,9 @@ describe('MatchingService', () => {
         reservedBtc: '1',
       }),
     ]);
+    transactionClient.trade.create.mockResolvedValueOnce({
+      id: 'trade-1',
+    });
 
     await matchingService.processOrder(taker.id);
 
@@ -239,6 +296,31 @@ describe('MatchingService', () => {
         },
       ],
     ]);
+    expect(realtimeOutboxService.appendEvents).toHaveBeenCalledWith(
+      transactionClient,
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'market.changed',
+          reason: 'trade-executed',
+          orderId: 'buy-taker',
+          tradeIds: ['trade-1'],
+        }),
+        expect.objectContaining({
+          type: 'account.changed',
+          reason: 'trade-executed',
+          orderId: 'buy-taker',
+          tradeIds: ['trade-1'],
+          userId: 'buyer',
+        }),
+        expect.objectContaining({
+          type: 'account.changed',
+          reason: 'trade-executed',
+          orderId: 'buy-taker',
+          tradeIds: ['trade-1'],
+          userId: 'seller',
+        }),
+      ]),
+    );
   });
 
   it('should partially fill a queued order across multiple makers in price-time priority', async () => {
@@ -317,6 +399,13 @@ describe('MatchingService', () => {
           reservedBtc: '0.3',
         }),
       ]);
+    transactionClient.trade.create
+      .mockResolvedValueOnce({
+        id: 'trade-1',
+      })
+      .mockResolvedValueOnce({
+        id: 'trade-2',
+      });
 
     await matchingService.processOrder(taker.id);
 
@@ -397,6 +486,38 @@ describe('MatchingService', () => {
         },
       ],
     ]);
+    expect(realtimeOutboxService.appendEvents).toHaveBeenCalledWith(
+      transactionClient,
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'market.changed',
+          reason: 'trade-executed',
+          orderId: 'buy-taker',
+          tradeIds: ['trade-1', 'trade-2'],
+        }),
+        expect.objectContaining({
+          type: 'account.changed',
+          reason: 'trade-executed',
+          orderId: 'buy-taker',
+          tradeIds: ['trade-1', 'trade-2'],
+          userId: 'buyer',
+        }),
+        expect.objectContaining({
+          type: 'account.changed',
+          reason: 'trade-executed',
+          orderId: 'buy-taker',
+          tradeIds: ['trade-1', 'trade-2'],
+          userId: 'seller-1',
+        }),
+        expect.objectContaining({
+          type: 'account.changed',
+          reason: 'trade-executed',
+          orderId: 'buy-taker',
+          tradeIds: ['trade-1', 'trade-2'],
+          userId: 'seller-2',
+        }),
+      ]),
+    );
   });
 
   it('should fully match a SELL taker against a BUY maker', async () => {
@@ -439,6 +560,9 @@ describe('MatchingService', () => {
         reservedUsd: '10000',
       }),
     ]);
+    transactionClient.trade.create.mockResolvedValueOnce({
+      id: 'trade-1',
+    });
 
     await matchingService.processOrder(taker.id);
 
@@ -495,6 +619,31 @@ describe('MatchingService', () => {
         },
       ],
     ]);
+    expect(realtimeOutboxService.appendEvents).toHaveBeenCalledWith(
+      transactionClient,
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'market.changed',
+          reason: 'trade-executed',
+          orderId: 'sell-taker',
+          tradeIds: ['trade-1'],
+        }),
+        expect.objectContaining({
+          type: 'account.changed',
+          reason: 'trade-executed',
+          orderId: 'sell-taker',
+          tradeIds: ['trade-1'],
+          userId: 'seller',
+        }),
+        expect.objectContaining({
+          type: 'account.changed',
+          reason: 'trade-executed',
+          orderId: 'sell-taker',
+          tradeIds: ['trade-1'],
+          userId: 'buyer',
+        }),
+      ]),
+    );
   });
 
   it('should quantize executed cost and fees to 8 decimal places before persisting balances', async () => {
@@ -537,6 +686,9 @@ describe('MatchingService', () => {
         reservedUsd: '0.03333333',
       }),
     ]);
+    transactionClient.trade.create.mockResolvedValueOnce({
+      id: 'trade-1',
+    });
 
     await matchingService.processOrder(taker.id);
 
@@ -607,6 +759,83 @@ describe('MatchingService', () => {
     expect(transactionClient.trade.create).not.toHaveBeenCalled();
     expect(transactionClient.order.update).not.toHaveBeenCalled();
     expect(transactionClient.wallet.update).not.toHaveBeenCalled();
+    expect(realtimeOutboxService.appendEvents).not.toHaveBeenCalled();
+  });
+
+  it('should not match an order against another order from the same user', async () => {
+    const taker = buildOrder({
+      id: 'buy-taker',
+      userId: 'trader',
+      side: OrderSide.BUY,
+      status: OrderStatus.QUEUED,
+    });
+
+    transactionClient.order.findUnique.mockResolvedValueOnce(taker);
+    transactionClient.order.findMany.mockResolvedValueOnce([]);
+    transactionClient.$queryRaw.mockResolvedValueOnce([{ id: taker.id }]);
+
+    await matchingService.processOrder(taker.id);
+
+    expect(transactionClient.order.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          userId: { not: 'trader' },
+        }),
+      }),
+    );
+    expect(transactionClient.trade.create).not.toHaveBeenCalled();
+    expect(transactionClient.wallet.update).not.toHaveBeenCalled();
+    expect(transactionClient.order.update).toHaveBeenCalledWith({
+      where: { id: taker.id },
+      data: { status: OrderStatus.OPEN },
+    });
+  });
+
+  it('should reject a queued order and release its reserved funds after retries fail', async () => {
+    const order = buildOrder({
+      id: 'queued-buy',
+      userId: 'buyer',
+      side: OrderSide.BUY,
+      status: OrderStatus.QUEUED,
+      price: '10000',
+      remainingAmount: '0.5',
+    });
+
+    transactionClient.$queryRaw.mockResolvedValueOnce([{ id: order.id }]);
+    transactionClient.order.findUnique.mockResolvedValueOnce(order);
+    transactionClient.order.update.mockResolvedValueOnce({
+      ...order,
+      status: OrderStatus.REJECTED,
+    });
+    transactionClient.wallet.update.mockResolvedValueOnce(
+      buildWallet({
+        userId: 'buyer',
+      }),
+    );
+
+    await matchingService.rejectOrderAfterFailedProcessing(order.id);
+
+    expect(transactionClient.order.update).toHaveBeenCalledWith({
+      where: { id: order.id },
+      data: { status: OrderStatus.REJECTED },
+    });
+    expect(transactionClient.wallet.update).toHaveBeenCalledWith({
+      where: { userId: 'buyer' },
+      data: {
+        availableUsd: { increment: new Prisma.Decimal('5000') },
+        reservedUsd: { decrement: new Prisma.Decimal('5000') },
+      },
+    });
+    expect(realtimeOutboxService.appendEvent).toHaveBeenCalledWith(
+      transactionClient,
+      expect.objectContaining({
+        type: 'account.changed',
+        reason: 'order-rejected',
+        orderId: order.id,
+        userId: 'buyer',
+      }),
+    );
+    expect(realtimeOutboxDispatcherService.dispatchPending).toHaveBeenCalled();
   });
 
   it('should fail when the queued order does not exist', async () => {

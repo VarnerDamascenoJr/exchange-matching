@@ -11,6 +11,7 @@ type EnvironmentVariables = {
   JWT_EXPIRES_IN?: string;
   REDIS_HOST?: string;
   REDIS_PORT?: string | number;
+  RUN_DATABASE_E2E?: string;
 };
 
 const parseNumber = (
@@ -65,11 +66,21 @@ export function validateEnvironment(config: EnvironmentVariables) {
   const nodeEnv = config.NODE_ENV ?? 'development';
 
   if (nodeEnv === 'test') {
+    const runDatabaseE2E = config.RUN_DATABASE_E2E === 'true';
+
     return {
       NODE_ENV: nodeEnv,
       PORT: config.PORT ? parseNumber(config.PORT, 'PORT') : 3000,
       JWT_SECRET: config.JWT_SECRET ?? 'test-jwt-secret',
       JWT_EXPIRES_IN: config.JWT_EXPIRES_IN ?? '1h',
+      RUN_DATABASE_E2E: runDatabaseE2E,
+      ...(runDatabaseE2E
+        ? {
+            DATABASE_URL: parseDatabaseUrl(config.DATABASE_URL),
+            REDIS_HOST: parseString(config.REDIS_HOST, 'REDIS_HOST'),
+            REDIS_PORT: parseNumber(config.REDIS_PORT, 'REDIS_PORT'),
+          }
+        : {}),
     };
   }
 

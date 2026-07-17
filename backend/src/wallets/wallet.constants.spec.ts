@@ -6,8 +6,8 @@ import {
   ZERO_BALANCE,
 } from './wallet.constants';
 
-const formatDecimal = (value: Prisma.Decimal.Value) =>
-  new Prisma.Decimal(value).toFixed(8);
+const formatDecimal = (value: { toString(): string }) =>
+  new Prisma.Decimal(value.toString()).toFixed(8);
 
 describe('wallet.constants', () => {
   it('should build the initial wallet balances using decimal-safe values', () => {

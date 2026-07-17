@@ -1,475 +1,266 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import {
-  Order,
-  OrderSide,
-  OrderStatus,
-  Prisma,
-  PrismaClient,
-  TradeFeeAsset,
-  Wallet,
-} from '@prisma/client';
-import { multiplyScaled, subtractScaled } from '../common/decimal.utils';
+import { OrderSide, OrderStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-
-type TransactionClient = Omit<
-  PrismaClient,
-  '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
->;
+import { RealtimeOutboxDispatcherService } from '../realtime/realtime-outbox-dispatcher.service';
+import { RealtimeOutboxService } from '../realtime/realtime-outbox.service';
+import { OrderLockingService } from '../orders/order-locking.service';
+import { MatchingOrderBookService } from './matching-order-book.service';
+import { TradeSettlementService } from './trade-settlement.service';
+import { WalletFundsService } from '../wallets/wallet-funds.service';
 
 @Injectable()
 export class MatchingService {
   private readonly logger = new Logger(MatchingService.name);
-  private static readonly MAKER_FEE_RATE = new Prisma.Decimal('0.005');
-  private static readonly TAKER_FEE_RATE = new Prisma.Decimal('0.003');
 
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(
+    private readonly prismaService: PrismaService,
+    private readonly matchingOrderBookService: MatchingOrderBookService,
+    private readonly orderLockingService: OrderLockingService,
+    private readonly tradeSettlementService: TradeSettlementService,
+    private readonly realtimeOutboxService: RealtimeOutboxService,
+    private readonly realtimeOutboxDispatcherService: RealtimeOutboxDispatcherService,
+    private readonly walletFundsService: WalletFundsService,
+  ) {}
 
   async processOrder(orderId: string): Promise<void> {
-    await this.prismaService.$transaction(async (transactionClient) => {
-      const taker = await this.lockAndLoadOrder(transactionClient, orderId);
-
-      if (!taker) {
-        throw new NotFoundException(`Order ${orderId} not found`);
-      }
-
-      if (taker.status !== OrderStatus.QUEUED) {
-        this.logger.log(
-          `Skipping order ${taker.id} because status is ${taker.status}`,
+    const eventsWereStored = await this.prismaService.$transaction<boolean>(
+      async (transactionClient) => {
+        const taker = await this.orderLockingService.lockAndLoadOrder(
+          transactionClient,
+          orderId,
         );
-        return;
-      }
 
-      const makers = await this.findAndLockEligibleMakers(
-        transactionClient,
-        taker,
-      );
+        if (!taker) {
+          throw new NotFoundException(`Order ${orderId} not found`);
+        }
 
-      if (makers.length === 0) {
+        if (taker.status !== OrderStatus.QUEUED) {
+          this.logger.log(
+            `Skipping order ${taker.id} because status is ${taker.status}`,
+          );
+          return false;
+        }
+
+        const makers =
+          await this.matchingOrderBookService.findAndLockEligibleMakers(
+            transactionClient,
+            taker,
+          );
+
+        if (makers.length === 0) {
+          const occurredAt = new Date().toISOString();
+
+          await transactionClient.order.update({
+            where: {
+              id: taker.id,
+            },
+            data: {
+              status: OrderStatus.OPEN,
+            },
+          });
+          await this.realtimeOutboxService.appendEvents(transactionClient, [
+            {
+              type: 'market.changed',
+              reason: 'order-opened',
+              occurredAt,
+              orderId: taker.id,
+            },
+            {
+              type: 'account.changed',
+              reason: 'order-opened',
+              occurredAt,
+              orderId: taker.id,
+              userId: taker.userId,
+            },
+          ]);
+
+          this.logger.log(`Order ${taker.id} moved from QUEUED to OPEN`);
+          return true;
+        }
+
+        let takerRemaining = new Prisma.Decimal(taker.remainingAmount);
+        let matchedAmount = new Prisma.Decimal(0);
+        const affectedUserIds = new Set<string>([taker.userId]);
+        const tradeIds: string[] = [];
+
+        for (const maker of makers) {
+          if (takerRemaining.lte(0)) {
+            break;
+          }
+
+          const makerRemaining = new Prisma.Decimal(maker.remainingAmount);
+
+          if (makerRemaining.lte(0)) {
+            continue;
+          }
+
+          const tradeAmount = takerRemaining.lt(makerRemaining)
+            ? takerRemaining
+            : makerRemaining;
+          const tradePrice = new Prisma.Decimal(maker.price);
+
+          const lockedWallets =
+            await this.tradeSettlementService.lockAndLoadWallets(
+              transactionClient,
+              [taker.userId, maker.userId],
+            );
+          const takerWallet = lockedWallets.get(taker.userId);
+          const makerWallet = lockedWallets.get(maker.userId);
+
+          if (!takerWallet || !makerWallet) {
+            throw new NotFoundException('Wallet not found for matched order');
+          }
+
+          affectedUserIds.add(maker.userId);
+
+          await this.tradeSettlementService.applyTradeBalances(
+            transactionClient,
+            taker,
+            maker,
+            takerWallet,
+            makerWallet,
+            tradeAmount,
+            tradePrice,
+          );
+
+          const feeDetails = this.tradeSettlementService.buildFeeDetails(
+            taker.side,
+            tradeAmount,
+            tradePrice,
+          );
+
+          const nextMakerRemaining = makerRemaining.sub(tradeAmount);
+          const buyOrderId = taker.side === OrderSide.BUY ? taker.id : maker.id;
+          const sellOrderId =
+            taker.side === OrderSide.SELL ? taker.id : maker.id;
+
+          const trade = await transactionClient.trade.create({
+            data: {
+              makerOrderId: maker.id,
+              takerOrderId: taker.id,
+              buyOrderId,
+              sellOrderId,
+              takerSide: taker.side,
+              makerFeeRate: feeDetails.makerFeeRate,
+              makerFeeAmount: feeDetails.makerFeeAmount,
+              makerFeeAsset: feeDetails.makerFeeAsset,
+              takerFeeRate: feeDetails.takerFeeRate,
+              takerFeeAmount: feeDetails.takerFeeAmount,
+              takerFeeAsset: feeDetails.takerFeeAsset,
+              price: tradePrice,
+              amount: tradeAmount,
+            },
+          });
+
+          tradeIds.push(trade.id);
+
+          await transactionClient.order.update({
+            where: {
+              id: maker.id,
+            },
+            data: {
+              remainingAmount: nextMakerRemaining,
+              status: nextMakerRemaining.eq(0)
+                ? OrderStatus.FILLED
+                : OrderStatus.PARTIALLY_FILLED,
+            },
+          });
+
+          takerRemaining = takerRemaining.sub(tradeAmount);
+          matchedAmount = matchedAmount.add(tradeAmount);
+        }
+
+        const takerStatus = matchedAmount.eq(0)
+          ? OrderStatus.OPEN
+          : takerRemaining.eq(0)
+            ? OrderStatus.FILLED
+            : OrderStatus.PARTIALLY_FILLED;
+        const occurredAt = new Date().toISOString();
+
         await transactionClient.order.update({
           where: {
             id: taker.id,
           },
           data: {
-            status: OrderStatus.OPEN,
+            remainingAmount: takerRemaining,
+            status: takerStatus,
           },
         });
-
-        this.logger.log(`Order ${taker.id} moved from QUEUED to OPEN`);
-        return;
-      }
-
-      let takerRemaining = new Prisma.Decimal(taker.remainingAmount);
-      let matchedAmount = new Prisma.Decimal(0);
-
-      for (const maker of makers) {
-        if (takerRemaining.lte(0)) {
-          break;
-        }
-
-        const makerRemaining = new Prisma.Decimal(maker.remainingAmount);
-
-        if (makerRemaining.lte(0)) {
-          continue;
-        }
-
-        const tradeAmount = takerRemaining.lt(makerRemaining)
-          ? takerRemaining
-          : makerRemaining;
-        const tradePrice = new Prisma.Decimal(maker.price);
-
-        const lockedWallets = await this.lockAndLoadWallets(transactionClient, [
-          taker.userId,
-          maker.userId,
+        await this.realtimeOutboxService.appendEvents(transactionClient, [
+          {
+            type: 'market.changed',
+            reason: 'trade-executed',
+            occurredAt,
+            orderId: taker.id,
+            tradeIds,
+          },
+          ...[...affectedUserIds].map((userId) => ({
+            type: 'account.changed' as const,
+            reason: 'trade-executed' as const,
+            occurredAt,
+            orderId: taker.id,
+            tradeIds,
+            userId,
+          })),
         ]);
-        const takerWallet = lockedWallets.get(taker.userId);
-        const makerWallet = lockedWallets.get(maker.userId);
 
-        if (!takerWallet || !makerWallet) {
-          throw new NotFoundException('Wallet not found for matched order');
-        }
+        this.logger.log(
+          `Processed order ${taker.id} with final status ${takerStatus} and remaining amount ${takerRemaining.toFixed(8)}`,
+        );
 
-        await this.applyTradeBalances(
+        return true;
+      },
+    );
+
+    if (eventsWereStored) {
+      await this.dispatchRealtimeOutbox();
+    }
+  }
+
+  async rejectOrderAfterFailedProcessing(orderId: string): Promise<void> {
+    const eventWasStored = await this.prismaService.$transaction<boolean>(
+      async (transactionClient) => {
+        const order = await this.orderLockingService.lockAndLoadOrder(
           transactionClient,
-          taker,
-          maker,
-          takerWallet,
-          makerWallet,
-          tradeAmount,
-          tradePrice,
+          orderId,
         );
 
-        const feeDetails = this.buildFeeDetails(
-          taker.side,
-          tradeAmount,
-          tradePrice,
-        );
-
-        const nextMakerRemaining = makerRemaining.sub(tradeAmount);
-        const buyOrderId = taker.side === OrderSide.BUY ? taker.id : maker.id;
-        const sellOrderId = taker.side === OrderSide.SELL ? taker.id : maker.id;
-
-        await transactionClient.trade.create({
-          data: {
-            makerOrderId: maker.id,
-            takerOrderId: taker.id,
-            buyOrderId,
-            sellOrderId,
-            takerSide: taker.side,
-            makerFeeRate: MatchingService.MAKER_FEE_RATE,
-            makerFeeAmount: feeDetails.makerFeeAmount,
-            makerFeeAsset: feeDetails.makerFeeAsset,
-            takerFeeRate: MatchingService.TAKER_FEE_RATE,
-            takerFeeAmount: feeDetails.takerFeeAmount,
-            takerFeeAsset: feeDetails.takerFeeAsset,
-            price: tradePrice,
-            amount: tradeAmount,
-          },
-        });
+        if (!order || order.status !== OrderStatus.QUEUED) {
+          return false;
+        }
 
         await transactionClient.order.update({
-          where: {
-            id: maker.id,
-          },
-          data: {
-            remainingAmount: nextMakerRemaining,
-            status: nextMakerRemaining.eq(0)
-              ? OrderStatus.FILLED
-              : OrderStatus.PARTIALLY_FILLED,
-          },
+          where: { id: order.id },
+          data: { status: OrderStatus.REJECTED },
+        });
+        await this.walletFundsService.releaseFunds(transactionClient, order);
+        await this.realtimeOutboxService.appendEvent(transactionClient, {
+          type: 'account.changed',
+          reason: 'order-rejected',
+          occurredAt: new Date().toISOString(),
+          orderId: order.id,
+          userId: order.userId,
         });
 
-        takerRemaining = takerRemaining.sub(tradeAmount);
-        matchedAmount = matchedAmount.add(tradeAmount);
-      }
-
-      const takerStatus = matchedAmount.eq(0)
-        ? OrderStatus.OPEN
-        : takerRemaining.eq(0)
-          ? OrderStatus.FILLED
-          : OrderStatus.PARTIALLY_FILLED;
-
-      await transactionClient.order.update({
-        where: {
-          id: taker.id,
-        },
-        data: {
-          remainingAmount: takerRemaining,
-          status: takerStatus,
-        },
-      });
-
-      this.logger.log(
-        `Processed order ${taker.id} with final status ${takerStatus} and remaining amount ${takerRemaining.toFixed(8)}`,
-      );
-    });
-  }
-
-  private async lockAndLoadOrder(
-    transactionClient: TransactionClient,
-    orderId: string,
-  ): Promise<Order | null> {
-    await transactionClient.$queryRaw`
-      SELECT "id"
-      FROM "orders"
-      WHERE "id" = ${orderId}
-      FOR UPDATE
-    `;
-
-    return transactionClient.order.findUnique({
-      where: {
-        id: orderId,
+        this.logger.error(
+          `Rejected order ${order.id} after matching retries were exhausted`,
+        );
+        return true;
       },
-    });
-  }
+    );
 
-  private async findAndLockEligibleMakers(
-    transactionClient: TransactionClient,
-    taker: Order,
-  ): Promise<Order[]> {
-    const candidateIds = await transactionClient.order.findMany({
-      where: {
-        side: taker.side === OrderSide.BUY ? OrderSide.SELL : OrderSide.BUY,
-        status: {
-          in: [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED],
-        },
-        price:
-          taker.side === OrderSide.BUY
-            ? {
-                lte: taker.price,
-              }
-            : {
-                gte: taker.price,
-              },
-      },
-      select: {
-        id: true,
-      },
-      orderBy:
-        taker.side === OrderSide.BUY
-          ? [{ price: 'asc' }, { sequence: 'asc' }]
-          : [{ price: 'desc' }, { sequence: 'asc' }],
-    });
-
-    const makers: Order[] = [];
-
-    for (const candidate of candidateIds) {
-      const lockedRows = await transactionClient.$queryRaw<{ id: string }[]>`
-        SELECT "id"
-        FROM "orders"
-        WHERE "id" = ${candidate.id}
-        FOR UPDATE SKIP LOCKED
-      `;
-
-      if (lockedRows.length === 0) {
-        continue;
-      }
-
-      const maker = await transactionClient.order.findUnique({
-        where: {
-          id: candidate.id,
-        },
-      });
-
-      if (!maker) {
-        continue;
-      }
-
-      if (!this.isEligibleMaker(taker, maker)) {
-        continue;
-      }
-
-      makers.push(maker);
+    if (eventWasStored) {
+      await this.dispatchRealtimeOutbox();
     }
-
-    return makers;
   }
 
-  private isEligibleMaker(taker: Order, maker: Order): boolean {
-    if (
-      maker.status !== OrderStatus.OPEN &&
-      maker.status !== OrderStatus.PARTIALLY_FILLED
-    ) {
-      return false;
+  private async dispatchRealtimeOutbox(): Promise<void> {
+    try {
+      await this.realtimeOutboxDispatcherService.dispatchPending();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown realtime error';
+      this.logger.warn(`Realtime outbox dispatch failed: ${message}`);
     }
-
-    if (maker.remainingAmount.lte(0)) {
-      return false;
-    }
-
-    if (taker.side === OrderSide.BUY) {
-      return maker.side === OrderSide.SELL && maker.price.lte(taker.price);
-    }
-
-    return maker.side === OrderSide.BUY && maker.price.gte(taker.price);
-  }
-
-  private async lockAndLoadWallets(
-    transactionClient: TransactionClient,
-    userIds: string[],
-  ): Promise<Map<string, Wallet>> {
-    const uniqueUserIds = [...new Set(userIds)].sort();
-    const userIdParameters = Prisma.join(
-      uniqueUserIds.map((userId) => Prisma.sql`${userId}`),
-    );
-
-    await transactionClient.$queryRaw`
-      SELECT "id"
-      FROM "wallets"
-      WHERE "user_id" IN (${userIdParameters})
-      ORDER BY "user_id" ASC
-      FOR UPDATE
-    `;
-
-    const wallets = await transactionClient.wallet.findMany({
-      where: {
-        userId: {
-          in: uniqueUserIds,
-        },
-      },
-    });
-
-    return new Map(wallets.map((wallet) => [wallet.userId, wallet]));
-  }
-
-  private async applyTradeBalances(
-    transactionClient: TransactionClient,
-    taker: Order,
-    maker: Order,
-    takerWallet: Wallet,
-    makerWallet: Wallet,
-    tradeAmount: Prisma.Decimal,
-    tradePrice: Prisma.Decimal,
-  ) {
-    if (taker.side === OrderSide.BUY) {
-      await this.applyBuyTakerBalances(
-        transactionClient,
-        taker,
-        maker,
-        takerWallet,
-        makerWallet,
-        tradeAmount,
-        tradePrice,
-      );
-      return;
-    }
-
-    await this.applySellTakerBalances(
-      transactionClient,
-      taker,
-      maker,
-      takerWallet,
-      makerWallet,
-      tradeAmount,
-      tradePrice,
-    );
-  }
-
-  private async applyBuyTakerBalances(
-    transactionClient: TransactionClient,
-    taker: Order,
-    maker: Order,
-    takerWallet: Wallet,
-    makerWallet: Wallet,
-    tradeAmount: Prisma.Decimal,
-    tradePrice: Prisma.Decimal,
-  ) {
-    const reservedCost = multiplyScaled(tradeAmount, taker.price);
-    const executedCost = multiplyScaled(tradeAmount, tradePrice);
-    const priceImprovement = subtractScaled(reservedCost, executedCost);
-    const takerFeeAmount = multiplyScaled(
-      tradeAmount,
-      MatchingService.TAKER_FEE_RATE,
-    );
-    const makerFeeAmount = multiplyScaled(
-      executedCost,
-      MatchingService.MAKER_FEE_RATE,
-    );
-    const receivedBtc = subtractScaled(tradeAmount, takerFeeAmount);
-    const receivedUsd = subtractScaled(executedCost, makerFeeAmount);
-
-    await transactionClient.wallet.update({
-      where: {
-        userId: takerWallet.userId,
-      },
-      data: {
-        reservedUsd: {
-          decrement: reservedCost,
-        },
-        availableUsd: {
-          increment: priceImprovement,
-        },
-        availableBtc: {
-          increment: receivedBtc,
-        },
-      },
-    });
-
-    await transactionClient.wallet.update({
-      where: {
-        userId: makerWallet.userId,
-      },
-      data: {
-        reservedBtc: {
-          decrement: tradeAmount,
-        },
-        availableUsd: {
-          increment: receivedUsd,
-        },
-      },
-    });
-
-    this.logger.log(
-      `Matched BUY taker ${taker.id} with SELL maker ${maker.id} for ${tradeAmount.toFixed(8)} BTC at ${tradePrice.toFixed(8)}`,
-    );
-  }
-
-  private async applySellTakerBalances(
-    transactionClient: TransactionClient,
-    taker: Order,
-    maker: Order,
-    takerWallet: Wallet,
-    makerWallet: Wallet,
-    tradeAmount: Prisma.Decimal,
-    tradePrice: Prisma.Decimal,
-  ) {
-    const executedCost = multiplyScaled(tradeAmount, tradePrice);
-    const takerFeeAmount = multiplyScaled(
-      executedCost,
-      MatchingService.TAKER_FEE_RATE,
-    );
-    const makerFeeAmount = multiplyScaled(
-      tradeAmount,
-      MatchingService.MAKER_FEE_RATE,
-    );
-    const receivedUsd = subtractScaled(executedCost, takerFeeAmount);
-    const receivedBtc = subtractScaled(tradeAmount, makerFeeAmount);
-
-    await transactionClient.wallet.update({
-      where: {
-        userId: takerWallet.userId,
-      },
-      data: {
-        reservedBtc: {
-          decrement: tradeAmount,
-        },
-        availableUsd: {
-          increment: receivedUsd,
-        },
-      },
-    });
-
-    await transactionClient.wallet.update({
-      where: {
-        userId: makerWallet.userId,
-      },
-      data: {
-        reservedUsd: {
-          decrement: executedCost,
-        },
-        availableBtc: {
-          increment: receivedBtc,
-        },
-      },
-    });
-
-    this.logger.log(
-      `Matched SELL taker ${taker.id} with BUY maker ${maker.id} for ${tradeAmount.toFixed(8)} BTC at ${tradePrice.toFixed(8)}`,
-    );
-  }
-
-  private buildFeeDetails(
-    takerSide: OrderSide,
-    tradeAmount: Prisma.Decimal,
-    tradePrice: Prisma.Decimal,
-  ) {
-    const executedCost = multiplyScaled(tradeAmount, tradePrice);
-
-    if (takerSide === OrderSide.BUY) {
-      return {
-        makerFeeAmount: multiplyScaled(
-          executedCost,
-          MatchingService.MAKER_FEE_RATE,
-        ),
-        makerFeeAsset: TradeFeeAsset.USD,
-        takerFeeAmount: multiplyScaled(
-          tradeAmount,
-          MatchingService.TAKER_FEE_RATE,
-        ),
-        takerFeeAsset: TradeFeeAsset.BTC,
-      };
-    }
-
-    return {
-      makerFeeAmount: multiplyScaled(
-        tradeAmount,
-        MatchingService.MAKER_FEE_RATE,
-      ),
-      makerFeeAsset: TradeFeeAsset.BTC,
-      takerFeeAmount: multiplyScaled(
-        executedCost,
-        MatchingService.TAKER_FEE_RATE,
-      ),
-      takerFeeAsset: TradeFeeAsset.USD,
-    };
   }
 }
