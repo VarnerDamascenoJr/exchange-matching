@@ -1,3 +1,6 @@
 export const ORDER_MATCHING_QUEUE_NAME = 'order-matching';
 export const PROCESS_ORDER_JOB_NAME = 'process-order';
 export const ORDER_MATCHING_CONCURRENCY = 1;
+export const ORDER_MATCHING_OUTBOX_BATCH_SIZE = 50;
+export const ORDER_MATCHING_OUTBOX_CLAIM_TIMEOUT_SECONDS = 30;
+export const ORDER_MATCHING_OUTBOX_POLL_INTERVAL_MS = 2_000;

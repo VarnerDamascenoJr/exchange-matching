@@ -1,26 +1,22 @@
 import {
   BadRequestException,
   Injectable,
-  InternalServerErrorException,
   Logger,
   NotFoundException,
-  ServiceUnavailableException,
 } from '@nestjs/common';
-import {
-  OrderSide,
-  OrderStatus,
-  Prisma,
-  PrismaClient,
-  Wallet,
-} from '@prisma/client';
+import { OrderSide, OrderStatus, Prisma, PrismaClient } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { OrderMatchingQueueService } from '../queue/order-matching.queue';
-import {
-  DECIMAL_PRECISION,
-  DECIMAL_SCALE,
-  multiplyScaled,
-} from '../common/decimal.utils';
+import { buildPaginatedResponse } from '../common/pagination';
+import { parsePositiveDecimalInput } from '../common/decimal-input';
+import { buildIdPrefixFilter } from '../common/id-filter';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
+import { OrderMatchingOutboxDispatcherService } from '../queue/order-matching-outbox-dispatcher.service';
+import { OrderMatchingOutboxService } from '../queue/order-matching-outbox.service';
+import { RealtimeOutboxDispatcherService } from '../realtime/realtime-outbox-dispatcher.service';
+import { RealtimeOutboxService } from '../realtime/realtime-outbox.service';
 import { OrderSummary, toOrderSummary } from './order.mapper';
+import { WalletFundsService } from '../wallets/wallet-funds.service';
+import { OrderLockingService } from './order-locking.service';
 
 type TransactionClient = Omit<
   PrismaClient,
@@ -33,7 +29,12 @@ export class OrdersService {
 
   constructor(
     private readonly prismaService: PrismaService,
-    private readonly orderMatchingQueueService: OrderMatchingQueueService,
+    private readonly orderMatchingOutboxService: OrderMatchingOutboxService,
+    private readonly orderMatchingOutboxDispatcherService: OrderMatchingOutboxDispatcherService,
+    private readonly walletFundsService: WalletFundsService,
+    private readonly orderLockingService: OrderLockingService,
+    private readonly realtimeOutboxService: RealtimeOutboxService,
+    private readonly realtimeOutboxDispatcherService: RealtimeOutboxDispatcherService,
   ) {}
 
   private readonly activeStatuses = [
@@ -48,8 +49,8 @@ export class OrdersService {
     amountInput: string,
     priceInput: string,
   ): Promise<OrderSummary> {
-    const amount = this.parsePositiveDecimal(amountInput, 'amount');
-    const price = this.parsePositiveDecimal(priceInput, 'price');
+    const amount = parsePositiveDecimalInput(amountInput, 'amount');
+    const price = parsePositiveDecimalInput(priceInput, 'price');
 
     const order = await this.prismaService.$transaction(
       async (transactionClient) => {
@@ -61,7 +62,13 @@ export class OrdersService {
           throw new NotFoundException('Wallet not found');
         }
 
-        await this.reserveFunds(transactionClient, wallet, side, amount, price);
+        await this.walletFundsService.reserveFunds(
+          transactionClient,
+          wallet,
+          side,
+          amount,
+          price,
+        );
 
         const order = await transactionClient.order.create({
           data: {
@@ -74,206 +81,124 @@ export class OrdersService {
           },
         });
 
+        await this.orderMatchingOutboxService.appendOrder(
+          transactionClient,
+          order.id,
+        );
+        await this.realtimeOutboxService.appendEvent(transactionClient, {
+          type: 'account.changed',
+          reason: 'order-created',
+          occurredAt: new Date().toISOString(),
+          orderId: order.id,
+          userId,
+        });
+
         return order;
       },
     );
 
-    try {
-      await this.orderMatchingQueueService.enqueueProcessOrder(order.id);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Unknown queue error';
-      this.logger.error(
-        `Created order ${order.id} but failed to enqueue it for processing: ${message}`,
-        error instanceof Error ? error.stack : undefined,
-      );
-
-      await this.rejectQueuedOrder(order.id);
-
-      throw new ServiceUnavailableException(
-        'Order could not be queued for processing',
-      );
-    }
-
+    await this.dispatchOrderMatchingOutbox();
+    await this.dispatchRealtimeOutbox();
     return toOrderSummary(order);
   }
 
-  async getActiveOrders(userId: string): Promise<OrderSummary[]> {
-    const orders = await this.prismaService.order.findMany({
-      where: {
-        userId,
-        status: {
-          in: [...this.activeStatuses],
-        },
-      },
-      orderBy: [
-        {
-          createdAt: 'desc',
-        },
-        {
-          sequence: 'desc',
-        },
-      ],
-    });
+  async getActiveOrders(userId: string, query: PaginationQueryDto) {
+    const idFilter = buildIdPrefixFilter(query.id);
 
-    return orders.map(toOrderSummary);
+    const where: Prisma.OrderWhereInput = {
+      userId,
+      status: {
+        in: [...this.activeStatuses],
+      },
+      ...(idFilter ? { id: idFilter } : {}),
+    };
+
+    const [totalItems, orders] = await Promise.all([
+      this.prismaService.order.count({ where }),
+      this.prismaService.order.findMany({
+        where,
+        orderBy: [
+          {
+            createdAt: 'desc',
+          },
+          {
+            sequence: 'desc',
+          },
+        ],
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+      }),
+    ]);
+
+    return buildPaginatedResponse(
+      orders.map(toOrderSummary),
+      query.page,
+      query.pageSize,
+      totalItems,
+    );
   }
 
   async cancelOrder(userId: string, orderId: string): Promise<OrderSummary> {
-    return this.prismaService.$transaction(async (transactionClient) => {
-      const order = await this.lockAndLoadOrder(
-        transactionClient,
-        orderId,
-        userId,
-      );
+    const cancelledOrder = await this.prismaService.$transaction(
+      async (transactionClient) => {
+        const order = await this.orderLockingService.lockAndLoadOrder(
+          transactionClient,
+          orderId,
+          userId,
+        );
 
-      if (!order) {
-        throw new NotFoundException('Order not found');
-      }
+        if (!order) {
+          throw new NotFoundException('Order not found');
+        }
 
-      if (!this.isActiveStatus(order.status)) {
-        throw new BadRequestException('Order cannot be cancelled');
-      }
+        if (!this.isActiveStatus(order.status)) {
+          throw new BadRequestException('Order cannot be cancelled');
+        }
 
-      const wallet = await transactionClient.wallet.findUnique({
-        where: { userId },
-      });
+        const wallet = await transactionClient.wallet.findUnique({
+          where: { userId },
+        });
 
-      if (!wallet) {
-        throw new NotFoundException('Wallet not found');
-      }
+        if (!wallet) {
+          throw new NotFoundException('Wallet not found');
+        }
 
-      await transactionClient.order.update({
-        where: {
-          id: orderId,
-        },
-        data: {
+        await transactionClient.order.update({
+          where: {
+            id: orderId,
+          },
+          data: {
+            status: OrderStatus.CANCELLED,
+          },
+        });
+
+        await this.walletFundsService.releaseFunds(transactionClient, order);
+        await this.realtimeOutboxService.appendEvents(transactionClient, [
+          {
+            type: 'market.changed',
+            reason: 'order-cancelled',
+            occurredAt: new Date().toISOString(),
+            orderId,
+          },
+          {
+            type: 'account.changed',
+            reason: 'order-cancelled',
+            occurredAt: new Date().toISOString(),
+            orderId,
+            userId,
+          },
+        ]);
+
+        return toOrderSummary({
+          ...order,
           status: OrderStatus.CANCELLED,
-        },
-      });
-
-      await this.releaseFunds(transactionClient, order);
-
-      return toOrderSummary({
-        ...order,
-        status: OrderStatus.CANCELLED,
-        updatedAt: new Date(),
-      });
-    });
-  }
-
-  private parsePositiveDecimal(
-    value: string,
-    fieldName: string,
-  ): Prisma.Decimal {
-    const normalizedValue = value.trim();
-
-    if (!normalizedValue) {
-      throw new BadRequestException(`${fieldName} must be a non-empty string`);
-    }
-
-    try {
-      const parsedValue = new Prisma.Decimal(normalizedValue);
-
-      if (!parsedValue.isFinite()) {
-        throw new BadRequestException(`${fieldName} must be a valid decimal`);
-      }
-
-      if (parsedValue.lte(0)) {
-        throw new BadRequestException(`${fieldName} must be greater than zero`);
-      }
-
-      this.assertDecimalFitsSchema(parsedValue, fieldName);
-
-      return parsedValue;
-    } catch (error) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-
-      throw new BadRequestException(`${fieldName} must be a valid decimal`);
-    }
-  }
-
-  private assertDecimalFitsSchema(value: Prisma.Decimal, fieldName: string) {
-    const normalizedValue = value.toFixed();
-    const unsignedValue = normalizedValue.startsWith('-')
-      ? normalizedValue.slice(1)
-      : normalizedValue;
-    const [integerPart, fractionalPart = ''] = unsignedValue.split('.');
-    const normalizedIntegerPart = integerPart.replace(/^0+(?=\d)/, '');
-    const integerDigits =
-      normalizedIntegerPart.length > 0 ? normalizedIntegerPart.length : 1;
-    const significantFractionalPart = fractionalPart.replace(/0+$/, '');
-    const fractionalDigits = significantFractionalPart.length;
-    const totalDigits = integerDigits + fractionalDigits;
-
-    if (fractionalDigits > DECIMAL_SCALE) {
-      throw new BadRequestException(
-        `${fieldName} must have at most ${DECIMAL_SCALE} decimal places`,
-      );
-    }
-
-    if (totalDigits > DECIMAL_PRECISION) {
-      throw new BadRequestException(
-        `${fieldName} must fit within DECIMAL(${DECIMAL_PRECISION},${DECIMAL_SCALE})`,
-      );
-    }
-  }
-
-  private async reserveFunds(
-    transactionClient: TransactionClient,
-    wallet: Wallet,
-    side: OrderSide,
-    amount: Prisma.Decimal,
-    price: Prisma.Decimal,
-  ) {
-    if (side === OrderSide.BUY) {
-      const requiredUsd = multiplyScaled(amount, price);
-      const updatedWallet = await transactionClient.wallet.updateMany({
-        where: {
-          userId: wallet.userId,
-          availableUsd: {
-            gte: requiredUsd,
-          },
-        },
-        data: {
-          availableUsd: {
-            decrement: requiredUsd,
-          },
-          reservedUsd: {
-            increment: requiredUsd,
-          },
-        },
-      });
-
-      if (updatedWallet.count === 0) {
-        throw new BadRequestException('Insufficient USD balance');
-      }
-
-      return;
-    }
-
-    const updatedWallet = await transactionClient.wallet.updateMany({
-      where: {
-        userId: wallet.userId,
-        availableBtc: {
-          gte: amount,
-        },
+          updatedAt: new Date(),
+        });
       },
-      data: {
-        availableBtc: {
-          decrement: amount,
-        },
-        reservedBtc: {
-          increment: amount,
-        },
-      },
-    });
+    );
 
-    if (updatedWallet.count === 0) {
-      throw new BadRequestException('Insufficient BTC balance');
-    }
+    await this.dispatchRealtimeOutbox();
+    return cancelledOrder;
   }
 
   private isActiveStatus(
@@ -286,115 +211,24 @@ export class OrdersService {
     );
   }
 
-  private async releaseFunds(
-    transactionClient: TransactionClient,
-    order: {
-      userId: string;
-      side: OrderSide;
-      price: Prisma.Decimal;
-      remainingAmount: Prisma.Decimal;
-    },
-  ) {
-    if (order.side === OrderSide.BUY) {
-      const releasedUsd = multiplyScaled(order.remainingAmount, order.price);
-      await transactionClient.wallet.update({
-        where: {
-          userId: order.userId,
-        },
-        data: {
-          availableUsd: {
-            increment: releasedUsd,
-          },
-          reservedUsd: {
-            decrement: releasedUsd,
-          },
-        },
-      });
+  private async dispatchOrderMatchingOutbox(): Promise<void> {
+    try {
+      await this.orderMatchingOutboxDispatcherService.dispatchPending();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown matching queue error';
 
-      return;
+      this.logger.warn(`Order matching outbox dispatch failed: ${message}`);
     }
-
-    await transactionClient.wallet.update({
-      where: {
-        userId: order.userId,
-      },
-      data: {
-        availableBtc: {
-          increment: order.remainingAmount,
-        },
-        reservedBtc: {
-          decrement: order.remainingAmount,
-        },
-      },
-    });
   }
 
-  private async rejectQueuedOrder(orderId: string): Promise<void> {
-    await this.prismaService.$transaction(async (transactionClient) => {
-      const order = await this.lockAndLoadOrder(transactionClient, orderId);
-
-      if (!order || order.status !== OrderStatus.QUEUED) {
-        return;
-      }
-
-      const wallet = await transactionClient.wallet.findUnique({
-        where: { userId: order.userId },
-      });
-
-      if (!wallet) {
-        throw new InternalServerErrorException(
-          `Wallet not found for order ${order.id}`,
-        );
-      }
-
-      await transactionClient.order.update({
-        where: {
-          id: order.id,
-        },
-        data: {
-          status: OrderStatus.REJECTED,
-        },
-      });
-
-      await this.releaseFunds(transactionClient, order);
-    });
-  }
-
-  private async lockAndLoadOrder(
-    transactionClient: TransactionClient,
-    orderId: string,
-    userId?: string,
-  ) {
-    const lockedRows = userId
-      ? await transactionClient.$queryRaw<{ id: string }[]>`
-          SELECT "id"
-          FROM "orders"
-          WHERE "id" = ${orderId}
-            AND "user_id" = ${userId}
-          FOR UPDATE
-        `
-      : await transactionClient.$queryRaw<{ id: string }[]>`
-          SELECT "id"
-          FROM "orders"
-          WHERE "id" = ${orderId}
-          FOR UPDATE
-        `;
-
-    if (lockedRows.length === 0) {
-      return null;
+  private async dispatchRealtimeOutbox(): Promise<void> {
+    try {
+      await this.realtimeOutboxDispatcherService.dispatchPending();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unknown realtime error';
+      this.logger.warn(`Realtime outbox dispatch failed: ${message}`);
     }
-
-    return userId
-      ? transactionClient.order.findFirst({
-          where: {
-            id: orderId,
-            userId,
-          },
-        })
-      : transactionClient.order.findUnique({
-          where: {
-            id: orderId,
-          },
-        });
   }
 }

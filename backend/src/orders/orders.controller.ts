@@ -5,11 +5,13 @@ import {
   Get,
   Param,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { JwtPayload } from '../auth/auth.types';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { OrdersService } from './orders.service';
 
@@ -19,8 +21,11 @@ export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
   @Get('active')
-  getActiveOrders(@CurrentUser() currentUser: JwtPayload) {
-    return this.ordersService.getActiveOrders(currentUser.sub);
+  getActiveOrders(
+    @CurrentUser() currentUser: JwtPayload,
+    @Query() query: PaginationQueryDto,
+  ) {
+    return this.ordersService.getActiveOrders(currentUser.sub, query);
   }
 
   @Post()

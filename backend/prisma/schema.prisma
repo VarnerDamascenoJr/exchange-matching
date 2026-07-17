@@ -60,6 +60,7 @@ model Order {
   takerTrades    Trade[]     @relation("TakerTrades")
   buyTrades      Trade[]     @relation("BuyTrades")
   sellTrades     Trade[]     @relation("SellTrades")
+  matchingOutbox OrderMatchingOutbox?
   side           OrderSide
   status         OrderStatus
   price          Decimal     @db.Decimal(28, 8)
@@ -72,6 +73,20 @@ model Order {
   @@index([side, status, price(sort: Desc), sequence(sort: Asc)], map: "orders_matching_buy_idx")
   @@index([userId, status, createdAt(sort: Desc)], map: "orders_user_status_created_at_idx")
   @@map("orders")
+}
+
+model OrderMatchingOutbox {
+  id           String   @id
+  orderId      String   @unique @map("order_id")
+  order        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  attemptCount Int      @default(0) @map("attempt_count")
+  claimToken   String?  @map("claim_token")
+  claimedAt    DateTime? @map("claimed_at")
+  lastError    String?  @map("last_error")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([claimedAt, createdAt], map: "order_matching_outbox_claimed_created_at_idx")
+  @@map("order_matching_outbox")
 }
 
 model Trade {
@@ -105,16 +120,16 @@ model Trade {
 }
 
 model RealtimeEventOutbox {
-  id              String    @id
-  eventType       String    @map("event_type")
-  payload         Json
-  attemptCount    Int       @default(0) @map("attempt_count")
-  claimToken      String?   @map("claim_token")
-  claimedAt       DateTime? @map("claimed_at")
-  lastError       String?   @map("last_error")
-  publishedAt     DateTime? @map("published_at")
-  deadLetteredAt  DateTime? @map("dead_lettered_at")
-  createdAt       DateTime  @default(now()) @map("created_at")
+  id           String    @id
+  eventType    String    @map("event_type")
+  payload      Json
+  attemptCount Int       @default(0) @map("attempt_count")
+  claimToken   String?   @map("claim_token")
+  claimedAt    DateTime? @map("claimed_at")
+  lastError    String?   @map("last_error")
+  publishedAt  DateTime? @map("published_at")
+  deadLetteredAt DateTime? @map("dead_lettered_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
 
   @@index([publishedAt, createdAt], map: "realtime_event_outbox_published_created_at_idx")
   @@index([deadLetteredAt, createdAt], map: "realtime_event_outbox_dead_lettered_created_at_idx")
