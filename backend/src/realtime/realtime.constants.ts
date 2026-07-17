@@ -1,0 +1,11 @@
+export const REALTIME_EVENTS_CHANNEL = 'realtime-events';
+export const MARKET_CHANGED_EVENT = 'market:changed';
+export const ACCOUNT_CHANGED_EVENT = 'account:changed';
+export const USER_ROOM_PREFIX = 'user:';
+export const REALTIME_OUTBOX_BATCH_SIZE = 50;
+export const REALTIME_OUTBOX_CLAIM_TIMEOUT_SECONDS = 30;
+export const REALTIME_OUTBOX_POLL_INTERVAL_MS = 2_000;
+export const REALTIME_OUTBOX_MAX_ATTEMPTS = 10;
+export const REALTIME_OUTBOX_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1_000;
+export const REALTIME_OUTBOX_PUBLISHED_RETENTION_DAYS = 7;
+export const REALTIME_OUTBOX_DEAD_LETTER_RETENTION_DAYS = 30;
