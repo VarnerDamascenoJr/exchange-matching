@@ -1,6 +1,6 @@
 # Wisiex Order Matching Challenge
 
-BTC/USD limit order matching challenge implemented with a separate API process and worker.
+BTC/USD limit order matching challenge built with a separate API process and worker.
 
 ## Stack
 
@@ -40,15 +40,15 @@ BTC/USD limit order matching challenge implemented with a separate API process a
   - realtime refresh via Socket.io
 - Paginated GET list endpoints using `page` and `pageSize`
 
+## Prerequisites
+
+- Node.js `22.20.0` (matches CI)
+- npm `10+`
+- Docker with Docker Compose (recommended for local infrastructure)
+
 ## Environment
 
-Copy the root environment example:
-
-```bash
-cp .env.example .env
-```
-
-The default local values are:
+The root `.env.example` contains these default local values:
 
 ```env
 NODE_ENV=development
@@ -70,43 +70,49 @@ REDIS_PORT=6379
 VITE_API_BASE_URL=http://localhost:3000
 ```
 
-## Running with Docker
+## Quick start
 
-The root `docker-compose.yml` starts PostgreSQL and Redis:
+1. Copy the environment file:
+
+```bash
+cp .env.example .env
+```
+
+2. Start PostgreSQL and Redis:
 
 ```bash
 docker compose up -d
 ```
 
-## Backend setup
+3. Install backend dependencies, generate Prisma client, run migrations and seed:
 
 ```bash
 cd backend
-npm install
+npm ci
 npm run prisma:generate
-npx prisma migrate deploy
+npm run prisma:migrate:deploy
 npm run prisma:seed
 ```
 
-Run the API:
+4. Start the API:
 
 ```bash
 cd backend
 npm run start:dev
 ```
 
-Run the worker in another terminal:
+5. Start the worker in another terminal:
 
 ```bash
 cd backend
 npm run start:worker:dev
 ```
 
-## Frontend setup
+6. Install frontend dependencies and start the web app:
 
 ```bash
-cd frontend
-npm install
+cd ../frontend
+npm ci
 npm run dev
 ```
 
@@ -154,8 +160,7 @@ NODE_ENV=test npm run test:e2e -- --runInBand
 npm run build
 ```
 
-Para executar os cenarios E2E que usam PostgreSQL e Redis reais, inicie a
-infraestrutura local e aplique as migrations antes da suite:
+To run the database-backed E2E scenarios, start the local infrastructure first and apply the migrations before running the suite:
 
 ```bash
 docker compose up -d
@@ -175,6 +180,11 @@ npm run lint
 npm run test -- --run
 npm run build
 ```
+
+## Delivery
+
+- Keep the repository private.
+- Add `@jesobreira` as a reader/collaborator for the evaluation.
 
 ## Notes
 
