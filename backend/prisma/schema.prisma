@@ -103,3 +103,21 @@ model Trade {
   @@index([createdAt(sort: Desc), sequence(sort: Desc)], map: "trades_created_at_sequence_idx")
   @@map("trades")
 }
+
+model RealtimeEventOutbox {
+  id              String    @id
+  eventType       String    @map("event_type")
+  payload         Json
+  attemptCount    Int       @default(0) @map("attempt_count")
+  claimToken      String?   @map("claim_token")
+  claimedAt       DateTime? @map("claimed_at")
+  lastError       String?   @map("last_error")
+  publishedAt     DateTime? @map("published_at")
+  deadLetteredAt  DateTime? @map("dead_lettered_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@index([publishedAt, createdAt], map: "realtime_event_outbox_published_created_at_idx")
+  @@index([deadLetteredAt, createdAt], map: "realtime_event_outbox_dead_lettered_created_at_idx")
+  @@index([claimToken], map: "realtime_event_outbox_claim_token_idx")
+  @@map("realtime_event_outbox")
+}
