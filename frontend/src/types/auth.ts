@@ -16,14 +16,17 @@ export type AuthSession = {
   wallet: WalletSummary;
 };
 
+export type StoredAuthState = {
+  accessToken: string;
+};
+
 export type LoginPayload = {
   username: string;
 };
 
 export type AuthContextValue = {
-  session: AuthSession | null;
+  accessToken: string | null;
   isAuthenticated: boolean;
   login: (nextSession: AuthSession) => void;
   logout: () => void;
-  updateSession: (updater: (currentSession: AuthSession) => AuthSession) => void;
 };

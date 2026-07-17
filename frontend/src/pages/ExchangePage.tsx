@@ -8,56 +8,46 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
-import { useQuery } from '@tanstack/react-query';
-import { isAxiosError } from 'axios';
-import { useEffect } from 'react';
 import { AppShell } from '../app/AppShell';
 import { useAuth } from '../features/auth/hooks/useAuth';
-import { getMeRequest, getWalletRequest } from '../services/api';
+import { StatsGrid } from '../features/market/components/StatsGrid';
+import { MarketMatchesCard } from '../features/market/components/MarketMatchesCard';
+import { OrderBookCard } from '../features/market/components/OrderBookCard';
+import { useExchangePageData } from '../features/exchange/hooks/useExchangePageData';
+import { ActiveOrdersCard } from '../features/orders/components/ActiveOrdersCard';
+import { OrderFormCard } from '../features/orders/components/OrderFormCard';
+import { TradeHistoryCard } from '../features/trades/components/TradeHistoryCard';
 
 export function ExchangePage() {
-  const { logout, session, updateSession } = useAuth();
-
-  const meQuery = useQuery({
-    queryKey: ['me'],
-    queryFn: getMeRequest,
-    initialData: session?.user,
-    staleTime: 60_000,
+  const { accessToken, logout } = useAuth();
+  const {
+    buyPrefill,
+    sellPrefill,
+    meQuery,
+    walletQuery,
+    marketStatsQuery,
+    bidBookState,
+    askBookState,
+    matchesState,
+    activeOrdersState,
+    historyState,
+    bidBookQuery,
+    askBookQuery,
+    marketMatchesQuery,
+    activeOrdersQuery,
+    historyQuery,
+    isLoading,
+    hasPageError,
+    handleBidSelect,
+    handleAskSelect,
+  } = useExchangePageData({
+    accessToken,
+    onUnauthorized: logout,
   });
-
-  const walletQuery = useQuery({
-    queryKey: ['wallet'],
-    queryFn: getWalletRequest,
-    initialData: session?.wallet,
-    staleTime: 60_000,
-  });
-
-  const hasAuthFailure = [meQuery.error, walletQuery.error].some(
-    (error) => isAxiosError(error) && error.response?.status === 401,
-  );
-
-  useEffect(() => {
-    if (hasAuthFailure) {
-      logout();
-    }
-  }, [hasAuthFailure, logout]);
-
-  useEffect(() => {
-    if (meQuery.data && walletQuery.data) {
-      updateSession((currentSession) => ({
-        ...currentSession,
-        user: meQuery.data,
-        wallet: walletQuery.data,
-      }));
-    }
-  }, [meQuery.data, updateSession, walletQuery.data]);
-
-  const isLoading = meQuery.isLoading || walletQuery.isLoading;
-  const hasError = meQuery.isError || walletQuery.isError;
 
   return (
     <AppShell>
-      <Stack spacing={3}>
+      <Stack spacing={4}>
         <Stack
           direction={{ xs: 'column', md: 'row' }}
           spacing={2}
@@ -68,21 +58,41 @@ export function ExchangePage() {
         >
           <Box sx={{ minWidth: 0 }}>
             <Typography variant="overline" color="primary.main">
-              Exchange
+              BTC/USD exchange
             </Typography>
-            <Typography variant="h4">BTC/USD workspace</Typography>
+            <Typography variant="h4" sx={{ mb: 1 }}>
+              Matching desk
+            </Typography>
             <Typography color="text.secondary">
-              Authentication is live. Market modules come in the next steps.
+              Submit limit orders, follow the book and watch market activity refresh
+              in real time.
             </Typography>
           </Box>
 
-          <Button
-            variant="outlined"
-            onClick={logout}
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            spacing={2}
             sx={{ width: { xs: '100%', md: 'auto' } }}
           >
-            Sign out
-          </Button>
+            <Card elevation={0} sx={{ minWidth: 0 }}>
+              <CardContent>
+                <Typography color="text.secondary" gutterBottom>
+                  Logged in as
+                </Typography>
+                <Typography variant="h6" sx={{ overflowWrap: 'anywhere' }}>
+                  {meQuery.data?.username ?? 'Authenticated user'}
+                </Typography>
+              </CardContent>
+            </Card>
+
+            <Button
+              variant="outlined"
+              onClick={logout}
+              sx={{ width: { xs: '100%', sm: 'auto' } }}
+            >
+              Sign out
+            </Button>
+          </Stack>
         </Stack>
 
         {isLoading ? (
@@ -90,16 +100,24 @@ export function ExchangePage() {
             <CardContent>
               <Stack direction="row" spacing={2} sx={{ alignItems: 'center' }}>
                 <CircularProgress size={20} />
-                <Typography>Loading your session...</Typography>
+                <Typography>Loading your exchange workspace...</Typography>
               </Stack>
             </CardContent>
           </Card>
         ) : null}
 
-        {hasError ? (
+        {hasPageError ? (
           <Alert severity="error">
-            Unable to load your profile from the API right now.
+            One or more exchange panels could not be loaded right now.
           </Alert>
+        ) : null}
+
+        {marketStatsQuery.data ? (
+          <StatsGrid
+            stats={marketStatsQuery.data}
+            user={meQuery.data}
+            wallet={walletQuery.data}
+          />
         ) : null}
 
         <Box
@@ -108,75 +126,105 @@ export function ExchangePage() {
             gap: 3,
             gridTemplateColumns: {
               xs: '1fr',
-              md: 'repeat(12, minmax(0, 1fr))',
+              xl: 'repeat(12, minmax(0, 1fr))',
             },
           }}
         >
-          <Box sx={{ gridColumn: { xs: 'span 1', md: 'span 4' } }}>
-            <Card elevation={0} sx={{ height: '100%', minWidth: 0 }}>
-              <CardContent>
-                <Typography color="text.secondary" gutterBottom>
-                  Username
-                </Typography>
-                <Typography variant="h5" sx={{ overflowWrap: 'anywhere' }}>
-                  {meQuery.data?.username ?? session?.user.username}
-                </Typography>
-              </CardContent>
-            </Card>
-          </Box>
-
-          <Box sx={{ gridColumn: { xs: 'span 1', md: 'span 4' } }}>
-            <BalanceCard
-              label="Available BTC"
-              value={walletQuery.data?.availableBtc ?? session?.wallet.availableBtc}
+          <Box sx={{ gridColumn: { xs: 'span 1', xl: 'span 6' } }}>
+            <OrderFormCard
+              side="BUY"
+              accent="primary"
+              title="Buy BTC"
+              subtitle="Your order executes at your limit price or better."
+              prefill={buyPrefill}
             />
           </Box>
 
-          <Box sx={{ gridColumn: { xs: 'span 1', md: 'span 4' } }}>
-            <BalanceCard
-              label="Available USD"
-              value={walletQuery.data?.availableUsd ?? session?.wallet.availableUsd}
+          <Box sx={{ gridColumn: { xs: 'span 1', xl: 'span 6' } }}>
+            <OrderFormCard
+              side="SELL"
+              accent="secondary"
+              title="Sell BTC"
+              subtitle="Click a bid on the book to auto-fill this ticket."
+              prefill={sellPrefill}
             />
           </Box>
 
-          <Box sx={{ gridColumn: { xs: 'span 1', md: 'span 6' } }}>
-            <BalanceCard
-              label="Reserved BTC"
-              value={walletQuery.data?.reservedBtc ?? session?.wallet.reservedBtc}
+          <Box sx={{ gridColumn: { xs: 'span 1', xl: 'span 4' } }}>
+            <OrderBookCard
+              side="BUY"
+              levels={bidBookQuery.data?.items ?? []}
+              page={bidBookState.page}
+              pageSize={bidBookState.pageSize}
+              totalPages={bidBookQuery.data?.pagination.totalPages ?? 0}
+              totalItems={bidBookQuery.data?.pagination.totalItems ?? 0}
+              priceSearch={bidBookState.search}
+              onPageChange={bidBookState.setPage}
+              onPageSizeChange={bidBookState.setPageSize}
+              onPriceSearchChange={bidBookState.setSearch}
+              onLevelSelect={handleBidSelect}
             />
           </Box>
 
-          <Box sx={{ gridColumn: { xs: 'span 1', md: 'span 6' } }}>
-            <BalanceCard
-              label="Reserved USD"
-              value={walletQuery.data?.reservedUsd ?? session?.wallet.reservedUsd}
+          <Box sx={{ gridColumn: { xs: 'span 1', xl: 'span 4' } }}>
+            <OrderBookCard
+              side="SELL"
+              levels={askBookQuery.data?.items ?? []}
+              page={askBookState.page}
+              pageSize={askBookState.pageSize}
+              totalPages={askBookQuery.data?.pagination.totalPages ?? 0}
+              totalItems={askBookQuery.data?.pagination.totalItems ?? 0}
+              priceSearch={askBookState.search}
+              onPageChange={askBookState.setPage}
+              onPageSizeChange={askBookState.setPageSize}
+              onPriceSearchChange={askBookState.setSearch}
+              onLevelSelect={handleAskSelect}
+            />
+          </Box>
+
+          <Box sx={{ gridColumn: { xs: 'span 1', xl: 'span 4' } }}>
+            <MarketMatchesCard
+              items={marketMatchesQuery.data?.items ?? []}
+              page={matchesState.page}
+              pageSize={matchesState.pageSize}
+              totalPages={marketMatchesQuery.data?.pagination.totalPages ?? 0}
+              totalItems={marketMatchesQuery.data?.pagination.totalItems ?? 0}
+              search={matchesState.search}
+              onPageChange={matchesState.setPage}
+              onPageSizeChange={matchesState.setPageSize}
+              onSearchChange={matchesState.setSearch}
+            />
+          </Box>
+
+          <Box sx={{ gridColumn: { xs: 'span 1', xl: 'span 6' } }}>
+            <ActiveOrdersCard
+              items={activeOrdersQuery.data?.items ?? []}
+              page={activeOrdersState.page}
+              pageSize={activeOrdersState.pageSize}
+              totalPages={activeOrdersQuery.data?.pagination.totalPages ?? 0}
+              totalItems={activeOrdersQuery.data?.pagination.totalItems ?? 0}
+              search={activeOrdersState.search}
+              onPageChange={activeOrdersState.setPage}
+              onPageSizeChange={activeOrdersState.setPageSize}
+              onSearchChange={activeOrdersState.setSearch}
+            />
+          </Box>
+
+          <Box sx={{ gridColumn: { xs: 'span 1', xl: 'span 6' } }}>
+            <TradeHistoryCard
+              items={historyQuery.data?.items ?? []}
+              page={historyState.page}
+              pageSize={historyState.pageSize}
+              totalPages={historyQuery.data?.pagination.totalPages ?? 0}
+              totalItems={historyQuery.data?.pagination.totalItems ?? 0}
+              search={historyState.search}
+              onPageChange={historyState.setPage}
+              onPageSizeChange={historyState.setPageSize}
+              onSearchChange={historyState.setSearch}
             />
           </Box>
         </Box>
       </Stack>
     </AppShell>
-  );
-}
-
-type BalanceCardProps = {
-  label: string;
-  value?: string;
-};
-
-function BalanceCard({ label, value }: BalanceCardProps) {
-  return (
-    <Card elevation={0} sx={{ height: '100%', minWidth: 0 }}>
-      <CardContent>
-        <Typography color="text.secondary" gutterBottom>
-          {label}
-        </Typography>
-        <Typography
-          variant="h5"
-          sx={{ fontSize: { xs: '1.25rem', md: '1.5rem' }, overflowWrap: 'anywhere' }}
-        >
-          {value ?? '-'}
-        </Typography>
-      </CardContent>
-    </Card>
   );
 }
