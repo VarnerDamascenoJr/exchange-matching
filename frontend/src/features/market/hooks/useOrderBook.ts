@@ -26,5 +26,8 @@ export function useOrderBook({
         price,
       }),
     staleTime: 15_000,
+    refetchInterval: 8_000,
+    refetchIntervalInBackground: false,
+    refetchOnReconnect: true,
   });
 }

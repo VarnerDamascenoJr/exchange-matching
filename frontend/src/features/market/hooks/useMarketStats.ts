@@ -7,5 +7,8 @@ export function useMarketStats() {
     queryKey: queryKeys.marketStats,
     queryFn: getMarketStatsRequest,
     staleTime: 30_000,
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: false,
+    refetchOnReconnect: true,
   });
 }

@@ -8,5 +8,8 @@ export function useCurrentUser(enabled: boolean) {
     queryFn: getMeRequest,
     enabled,
     staleTime: 60_000,
+    refetchInterval: enabled ? 30_000 : false,
+    refetchIntervalInBackground: false,
+    refetchOnReconnect: true,
   });
 }

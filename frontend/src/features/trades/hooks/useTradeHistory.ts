@@ -8,5 +8,8 @@ export function useTradeHistory(query: PaginatedQuery) {
     queryKey: queryKeys.tradeHistory(query),
     queryFn: () => getTradeHistoryRequest(query),
     staleTime: 15_000,
+    refetchInterval: 12_000,
+    refetchIntervalInBackground: false,
+    refetchOnReconnect: true,
   });
 }
