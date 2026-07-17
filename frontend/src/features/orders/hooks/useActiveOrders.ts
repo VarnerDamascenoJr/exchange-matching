@@ -8,5 +8,8 @@ export function useActiveOrders(query: PaginatedQuery) {
     queryKey: queryKeys.activeOrders(query),
     queryFn: () => getActiveOrdersRequest(query),
     staleTime: 15_000,
+    refetchInterval: 8_000,
+    refetchIntervalInBackground: false,
+    refetchOnReconnect: true,
   });
 }

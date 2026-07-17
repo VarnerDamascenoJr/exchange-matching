@@ -8,5 +8,8 @@ export function useCurrentWallet(enabled: boolean) {
     queryFn: getWalletRequest,
     enabled,
     staleTime: 60_000,
+    refetchInterval: enabled ? 10_000 : false,
+    refetchIntervalInBackground: false,
+    refetchOnReconnect: true,
   });
 }

@@ -86,6 +86,24 @@ export function OrderFormCard({
     setValue('price', prefill.price, { shouldValidate: true });
   }, [prefill, setValue]);
 
+  useEffect(() => {
+    if (!createOrderMutation.isError && !createOrderMutation.isSuccess) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      createOrderMutation.reset();
+    }, 4_000);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    createOrderMutation,
+    createOrderMutation.isError,
+    createOrderMutation.isSuccess,
+  ]);
+
   return (
     <Card elevation={0} sx={{ height: '100%', minWidth: 0 }}>
       <CardContent>
@@ -106,20 +124,23 @@ export function OrderFormCard({
           <Box
             component="form"
             onSubmit={handleSubmit((values) =>
-              createOrderMutation.mutate(
-                {
-                  side,
-                  ...values,
-                },
-                {
-                  onSuccess: () => {
-                    reset({
-                      amount: '',
-                      price: '',
-                    });
+              {
+                createOrderMutation.reset();
+                createOrderMutation.mutate(
+                  {
+                    side,
+                    ...values,
                   },
-                },
-              )
+                  {
+                    onSuccess: () => {
+                      reset({
+                        amount: '',
+                        price: '',
+                      });
+                    },
+                  },
+                );
+              }
             )}
             noValidate
           >
