@@ -10,6 +10,7 @@ import { Navigate } from 'react-router-dom';
 import { AppShell } from '../app/AppShell';
 import { LoginForm } from '../features/auth/components/LoginForm';
 import { useAuth } from '../features/auth/hooks/useAuth';
+import { formatBtc, formatUsd } from '../utils/format';
 
 export function LoginPage() {
   const { isAuthenticated } = useAuth();
@@ -67,14 +68,20 @@ export function LoginPage() {
                       color: 'rgba(255,255,255,0.8)',
                     }}
                   >
-                    This first screen only authenticates and restores your starter
-                    balances. Order entry and market data come next.
+                    Authentication, balances, order flow and market activity are
+                    all wired up from here into the exchange workspace.
                   </Typography>
                 </Box>
 
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-                  <StatCard label="Starter BTC" value="100.00000000" />
-                  <StatCard label="Starter USD" value="100000.00000000" />
+                  <StatCard
+                    label="Starter BTC"
+                    value={formatBtc('100.00000000')}
+                  />
+                  <StatCard
+                    label="Starter USD"
+                    value={formatUsd('100000.00000000')}
+                  />
                 </Stack>
               </Stack>
             </CardContent>

@@ -64,7 +64,8 @@ export class RealtimeGateway {
   }
 
   private extractToken(client: Socket): string | null {
-    const authToken = client.handshake.auth.token;
+    const auth = client.handshake.auth as { token?: unknown };
+    const authToken = auth.token;
     const token = typeof authToken === 'string' ? authToken.trim() : undefined;
 
     if (!token) {

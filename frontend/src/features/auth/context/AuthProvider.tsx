@@ -1,33 +1,32 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { PropsWithChildren, useCallback, useMemo, useState } from 'react';
+import { queryKeys } from '../../../app/query-keys';
 import {
   clearAuthSession,
-  getStoredAuthSession,
-  storeAuthSession,
+  getStoredAuthState,
+  storeAuthState,
 } from '../../../services/session-storage';
-import type { AuthContextValue, AuthSession } from '../../../types/auth';
+import type { AuthContextValue, AuthSession, StoredAuthState } from '../../../types/auth';
 import { AuthContext } from './auth-context';
-
-const areSessionsEqual = (left: AuthSession, right: AuthSession) =>
-  left.accessToken === right.accessToken &&
-  left.user.id === right.user.id &&
-  left.user.username === right.user.username &&
-  left.wallet.availableBtc === right.wallet.availableBtc &&
-  left.wallet.reservedBtc === right.wallet.reservedBtc &&
-  left.wallet.availableUsd === right.wallet.availableUsd &&
-  left.wallet.reservedUsd === right.wallet.reservedUsd;
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const queryClient = useQueryClient();
-  const [session, setSession] = useState<AuthSession | null>(() =>
-    getStoredAuthSession(),
+  const [authState, setAuthState] = useState<StoredAuthState | null>(() =>
+    getStoredAuthState(),
   );
 
   const login = useCallback(
     (nextSession: AuthSession) => {
       queryClient.clear();
-      storeAuthSession(nextSession);
-      setSession(nextSession);
+      queryClient.setQueryData(queryKeys.me, nextSession.user);
+      queryClient.setQueryData(queryKeys.wallet, nextSession.wallet);
+
+      const nextAuthState = {
+        accessToken: nextSession.accessToken,
+      };
+
+      storeAuthState(nextAuthState);
+      setAuthState(nextAuthState);
     },
     [queryClient],
   );
@@ -35,38 +34,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const logout = useCallback(() => {
     queryClient.clear();
     clearAuthSession();
-    setSession(null);
+    setAuthState(null);
   }, [queryClient]);
-
-  const updateSession = useCallback(
-    (updater: (currentSession: AuthSession) => AuthSession) => {
-      setSession((currentSession) => {
-        if (!currentSession) {
-          return currentSession;
-        }
-
-        const nextSession = updater(currentSession);
-
-        if (areSessionsEqual(currentSession, nextSession)) {
-          return currentSession;
-        }
-
-        storeAuthSession(nextSession);
-        return nextSession;
-      });
-    },
-    [],
-  );
 
   const value = useMemo<AuthContextValue>(
     () => ({
-      session,
-      isAuthenticated: Boolean(session?.accessToken),
+      accessToken: authState?.accessToken ?? null,
+      isAuthenticated: Boolean(authState?.accessToken),
       login,
       logout,
-      updateSession,
     }),
-    [login, logout, session, updateSession],
+    [authState?.accessToken, login, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

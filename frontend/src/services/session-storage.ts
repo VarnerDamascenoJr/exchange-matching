@@ -1,8 +1,8 @@
-import { AuthSession } from '../types/auth';
+import { StoredAuthState } from '../types/auth';
 
 const AUTH_SESSION_STORAGE_KEY = 'wisiex.auth-session';
 
-export const getStoredAuthSession = (): AuthSession | null => {
+export const getStoredAuthState = (): StoredAuthState | null => {
   const rawSession = window.localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
 
   if (!rawSession) {
@@ -10,15 +10,27 @@ export const getStoredAuthSession = (): AuthSession | null => {
   }
 
   try {
-    return JSON.parse(rawSession) as AuthSession;
+    const parsedSession = JSON.parse(rawSession) as
+      | StoredAuthState
+      | { accessToken?: string };
+
+    if (typeof parsedSession.accessToken !== 'string') {
+      window.localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+      return null;
+    }
+
+    return { accessToken: parsedSession.accessToken };
   } catch {
     window.localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
     return null;
   }
 };
 
-export const storeAuthSession = (session: AuthSession) => {
-  window.localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
+export const storeAuthState = (authState: StoredAuthState) => {
+  window.localStorage.setItem(
+    AUTH_SESSION_STORAGE_KEY,
+    JSON.stringify(authState),
+  );
 };
 
 export const clearAuthSession = () => {

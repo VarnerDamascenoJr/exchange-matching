@@ -3,6 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
+import { MatchingModule } from '../src/matching/matching.module';
 import { MatchingService } from '../src/matching/matching.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 
@@ -39,7 +40,7 @@ describeDatabase('Matching persistence boundaries (e2e)', () => {
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
+      imports: [AppModule, MatchingModule],
     }).compile();
 
     app = moduleFixture.createNestApplication();

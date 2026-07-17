@@ -4,7 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { OrderSide, OrderStatus, Prisma, PrismaClient } from '@prisma/client';
+import { OrderSide, OrderStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildPaginatedResponse } from '../common/pagination';
 import { parsePositiveDecimalInput } from '../common/decimal-input';
@@ -17,11 +17,6 @@ import { RealtimeOutboxService } from '../realtime/realtime-outbox.service';
 import { OrderSummary, toOrderSummary } from './order.mapper';
 import { WalletFundsService } from '../wallets/wallet-funds.service';
 import { OrderLockingService } from './order-locking.service';
-
-type TransactionClient = Omit<
-  PrismaClient,
-  '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
->;
 
 @Injectable()
 export class OrdersService {
