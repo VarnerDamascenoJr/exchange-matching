@@ -14,13 +14,13 @@ jobs:
       postgres:
         image: postgres:17-alpine
         env:
-          POSTGRES_DB: wisiex_order_matching_test
+          POSTGRES_DB: exchange_matching_test
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d wisiex_order_matching_test"
+          --health-cmd "pg_isready -U postgres -d exchange_matching_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -54,7 +54,7 @@ jobs:
       - name: Apply database migrations
         working-directory: backend
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/wisiex_order_matching_test?schema=public
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/exchange_matching_test?schema=public
         run: npm run prisma:migrate:deploy
 
       - name: Lint backend
@@ -70,7 +70,7 @@ jobs:
         env:
           NODE_ENV: test
           RUN_DATABASE_E2E: true
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/wisiex_order_matching_test?schema=public
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/exchange_matching_test?schema=public
           REDIS_HOST: localhost
           REDIS_PORT: 6379
         run: npm run test:e2e -- --runInBand

@@ -1,6 +1,6 @@
 import { StoredAuthState } from '../types/auth';
 
-const AUTH_SESSION_STORAGE_KEY = 'wisiex.auth-session';
+const AUTH_SESSION_STORAGE_KEY = 'exchange-matching.auth-session';
 
 export const getStoredAuthState = (): StoredAuthState | null => {
   const rawSession = window.localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
