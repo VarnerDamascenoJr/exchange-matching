@@ -1,6 +1,6 @@
-# Wisiex Order Matching Challenge
+# Wisiex Exchange
 
-BTC/USD limit order matching challenge built with a separate API process and worker.
+BTC/USD limit order exchange built with a separate API process and matching worker.
 
 ## Stack
 
@@ -180,11 +180,6 @@ npm run lint
 npm run test -- --run
 npm run build
 ```
-
-## Delivery
-
-- Keep the repository private.
-- Add `@jesobreira` as a reader/collaborator for the evaluation.
 
 ## Notes
 
