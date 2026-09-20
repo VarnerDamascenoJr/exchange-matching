@@ -1,4 +1,4 @@
-# Wisiex Exchange
+# Exchange Matching
 
 BTC/USD limit order exchange built with a separate API process and matching worker.
 
@@ -56,10 +56,10 @@ PORT=3000
 
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
-POSTGRES_DB=wisiex_order_matching
+POSTGRES_DB=exchange_matching
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/wisiex_order_matching?schema=public
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/exchange_matching?schema=public
 
 JWT_SECRET=change-me
 JWT_EXPIRES_IN=1d
@@ -167,7 +167,7 @@ docker compose up -d
 cd backend
 npm run prisma:migrate:deploy
 NODE_ENV=test RUN_DATABASE_E2E=true \
-  DATABASE_URL='postgresql://postgres:postgres@localhost:5432/wisiex_order_matching?schema=public' \
+  DATABASE_URL='postgresql://postgres:postgres@localhost:5432/exchange_matching?schema=public' \
   REDIS_HOST=localhost REDIS_PORT=6379 \
   npm run test:e2e -- --runInBand
 ```

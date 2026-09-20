@@ -18,7 +18,7 @@ describe('session storage', () => {
 
   it('reads legacy full-session payloads as token-only state', () => {
     window.localStorage.setItem(
-      'wisiex.auth-session',
+      'exchange-matching.auth-session',
       JSON.stringify({
         accessToken: 'legacy-token',
         user: { id: 'user-1', username: 'alice' },

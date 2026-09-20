@@ -49,7 +49,7 @@ export function LoginPage() {
               >
                 <Box>
                   <Chip
-                    label="Wisiex Exchange"
+                    label="Exchange Matching"
                     sx={{
                       bgcolor: 'rgba(255,255,255,0.14)',
                       color: 'common.white',
