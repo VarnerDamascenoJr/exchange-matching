@@ -6,8 +6,8 @@ import { OrderMatchingOutboxService } from '../queue/order-matching-outbox.servi
 import { RealtimeOutboxDispatcherService } from '../realtime/realtime-outbox-dispatcher.service';
 import { RealtimeOutboxService } from '../realtime/realtime-outbox.service';
 import { WalletFundsService } from '../wallets/wallet-funds.service';
-import { OrderLockingService } from './order-locking.service';
 import { OrdersService } from './orders.service';
+import { OrdersRepository } from './orders.repository';
 
 const buildWallet = (overrides?: {
   availableBtc?: string;
@@ -57,7 +57,6 @@ describe('OrdersService', () => {
   let rootOrderFindManyMock: jest.Mock;
   let rootOrderCountMock: jest.Mock;
   let walletFundsService: WalletFundsService;
-  let orderLockingService: OrderLockingService;
   let transactionClient: {
     $queryRaw: jest.Mock;
     wallet: {
@@ -132,14 +131,12 @@ describe('OrdersService', () => {
     } as unknown as jest.Mocked<RealtimeOutboxDispatcherService>;
 
     walletFundsService = new WalletFundsService();
-    orderLockingService = new OrderLockingService();
 
     ordersService = new OrdersService(
-      prismaService,
+      new OrdersRepository(prismaService),
       orderMatchingOutboxService,
       orderMatchingOutboxDispatcherService,
       walletFundsService,
-      orderLockingService,
       realtimeOutboxService,
       realtimeOutboxDispatcherService,
     );
@@ -547,5 +544,162 @@ describe('OrdersService', () => {
     ).rejects.toThrow(new BadRequestException('Order cannot be cancelled'));
     expect(transactionClient.wallet.update).not.toHaveBeenCalled();
     expect(realtimeOutboxService.appendEvents).not.toHaveBeenCalled();
+  });
+
+  it('should use the persisted cancellation timestamp and release only the remaining BUY amount', async () => {
+    const partialOrder = buildOrder({
+      status: OrderStatus.PARTIALLY_FILLED,
+      originalAmount: '1',
+      remainingAmount: '0.25',
+    });
+    const updatedAt = new Date('2026-10-15T18:00:00.000Z');
+    transactionClient.$queryRaw.mockResolvedValueOnce([
+      { id: partialOrder.id },
+    ]);
+    transactionClient.order.findFirst.mockResolvedValueOnce(partialOrder);
+    transactionClient.wallet.findUnique.mockResolvedValueOnce(buildWallet());
+    transactionClient.order.update.mockResolvedValueOnce({
+      ...partialOrder,
+      status: OrderStatus.CANCELLED,
+      updatedAt,
+    });
+
+    await expect(
+      ordersService.cancelOrder('user-1', 'order-1'),
+    ).resolves.toMatchObject({
+      status: OrderStatus.CANCELLED,
+      remainingAmount: '0.25000000',
+      updatedAt: updatedAt.toISOString(),
+    });
+    expect(transactionClient.wallet.update).toHaveBeenCalledWith({
+      where: { userId: 'user-1' },
+      data: {
+        availableUsd: { increment: new Prisma.Decimal('2500') },
+        reservedUsd: { decrement: new Prisma.Decimal('2500') },
+      },
+    });
+  });
+
+  it.each([OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED])(
+    'should reject cancellation of a %s order before touching the wallet',
+    async (status) => {
+      transactionClient.$queryRaw.mockResolvedValueOnce([{ id: 'order-1' }]);
+      transactionClient.order.findFirst.mockResolvedValueOnce(
+        buildOrder({ status }),
+      );
+      await expect(
+        ordersService.cancelOrder('user-1', 'order-1'),
+      ).rejects.toThrow(new BadRequestException('Order cannot be cancelled'));
+      expect(transactionClient.wallet.findUnique).not.toHaveBeenCalled();
+      expect(transactionClient.order.update).not.toHaveBeenCalled();
+      expect(transactionClient.wallet.update).not.toHaveBeenCalled();
+      expect(realtimeOutboxService.appendEvents).not.toHaveBeenCalled();
+      expect(
+        realtimeOutboxDispatcherService.dispatchPending,
+      ).not.toHaveBeenCalled();
+    },
+  );
+
+  it('should reject cancellation without changing the order when the owner has no wallet', async () => {
+    transactionClient.$queryRaw.mockResolvedValueOnce([{ id: 'order-1' }]);
+    transactionClient.order.findFirst.mockResolvedValueOnce(buildOrder());
+    transactionClient.wallet.findUnique.mockResolvedValueOnce(null);
+    await expect(
+      ordersService.cancelOrder('user-1', 'order-1'),
+    ).rejects.toThrow(new NotFoundException('Wallet not found'));
+    expect(transactionClient.order.update).not.toHaveBeenCalled();
+    expect(transactionClient.wallet.update).not.toHaveBeenCalled();
+    expect(realtimeOutboxService.appendEvents).not.toHaveBeenCalled();
+  });
+
+  it('should propagate an outbox write failure without dispatching uncommitted events', async () => {
+    const failure = new Error('Outbox unavailable');
+    transactionClient.wallet.findUnique.mockResolvedValueOnce(buildWallet());
+    transactionClient.wallet.updateMany.mockResolvedValueOnce({ count: 1 });
+    transactionClient.order.create.mockResolvedValueOnce(buildOrder());
+    realtimeOutboxService.appendEvent.mockRejectedValueOnce(failure);
+    await expect(
+      ordersService.createOrder('user-1', OrderSide.BUY, '0.5', '10000'),
+    ).rejects.toBe(failure);
+    expect(prismaService.$transaction).toHaveBeenCalledTimes(1);
+    expect(
+      orderMatchingOutboxDispatcherService.dispatchPending,
+    ).not.toHaveBeenCalled();
+    expect(
+      realtimeOutboxDispatcherService.dispatchPending,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('should propagate a balance-release failure without writing or dispatching cancellation events', async () => {
+    const failure = new Error('Wallet update failed');
+    transactionClient.$queryRaw.mockResolvedValueOnce([{ id: 'order-1' }]);
+    transactionClient.order.findFirst.mockResolvedValueOnce(buildOrder());
+    transactionClient.wallet.findUnique.mockResolvedValueOnce(buildWallet());
+    transactionClient.order.update.mockResolvedValueOnce({
+      ...buildOrder(),
+      status: OrderStatus.CANCELLED,
+    });
+    transactionClient.wallet.update.mockRejectedValueOnce(failure);
+    await expect(ordersService.cancelOrder('user-1', 'order-1')).rejects.toBe(
+      failure,
+    );
+    expect(realtimeOutboxService.appendEvents).not.toHaveBeenCalled();
+    expect(
+      realtimeOutboxDispatcherService.dispatchPending,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('should preserve a committed cancellation when realtime dispatch fails', async () => {
+    transactionClient.$queryRaw.mockResolvedValueOnce([{ id: 'order-1' }]);
+    transactionClient.order.findFirst.mockResolvedValueOnce(buildOrder());
+    transactionClient.wallet.findUnique.mockResolvedValueOnce(buildWallet());
+    transactionClient.order.update.mockResolvedValueOnce({
+      ...buildOrder(),
+      status: OrderStatus.CANCELLED,
+    });
+    realtimeOutboxDispatcherService.dispatchPending.mockRejectedValueOnce(
+      new Error('Redis unavailable'),
+    );
+    await expect(
+      ordersService.cancelOrder('user-1', 'order-1'),
+    ).resolves.toMatchObject({ status: OrderStatus.CANCELLED });
+    expect(transactionClient.order.update).toHaveBeenCalledTimes(1);
+    expect(transactionClient.wallet.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('should return formatted orders with the requested page and filtered totals', async () => {
+    rootOrderCountMock.mockResolvedValueOnce(3);
+    rootOrderFindManyMock.mockResolvedValueOnce([buildOrder()]);
+    await expect(
+      ordersService.getActiveOrders('user-1', {
+        page: 2,
+        pageSize: 1,
+        id: ' order ',
+      }),
+    ).resolves.toMatchObject({
+      items: [{ id: 'order-1', price: '10000.00000000' }],
+      pagination: { page: 2, pageSize: 1, totalItems: 3, totalPages: 3 },
+    });
+    expect(rootOrderFindManyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          userId: 'user-1',
+          id: { startsWith: 'order' },
+        }),
+        skip: 1,
+        take: 1,
+      }),
+    );
+  });
+
+  it('should return empty pagination when there are no active orders', async () => {
+    rootOrderCountMock.mockResolvedValueOnce(0);
+    rootOrderFindManyMock.mockResolvedValueOnce([]);
+    await expect(
+      ordersService.getActiveOrders('user-1', { page: 1, pageSize: 25 }),
+    ).resolves.toEqual({
+      items: [],
+      pagination: { page: 1, pageSize: 25, totalItems: 0, totalPages: 0 },
+    });
   });
 });
