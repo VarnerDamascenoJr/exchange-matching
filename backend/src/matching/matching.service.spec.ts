@@ -3,7 +3,7 @@ import { OrderSide, OrderStatus, Prisma, TradeFeeAsset } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RealtimeOutboxDispatcherService } from '../realtime/realtime-outbox-dispatcher.service';
 import { RealtimeOutboxService } from '../realtime/realtime-outbox.service';
-import { OrderLockingService } from '../orders/order-locking.service';
+import { OrdersRepository } from '../orders/orders.repository';
 import { MatchingOrderBookService } from './matching-order-book.service';
 import { MatchingService } from './matching.service';
 import { TradeSettlementService } from './trade-settlement.service';
@@ -55,7 +55,7 @@ describe('MatchingService', () => {
   let realtimeOutboxService: jest.Mocked<RealtimeOutboxService>;
   let realtimeOutboxDispatcherService: jest.Mocked<RealtimeOutboxDispatcherService>;
   let matchingOrderBookService: MatchingOrderBookService;
-  let orderLockingService: OrderLockingService;
+  let ordersRepository: OrdersRepository;
   let tradeSettlementService: TradeSettlementService;
   let walletFundsService: WalletFundsService;
   let transactionClient: {
@@ -112,14 +112,14 @@ describe('MatchingService', () => {
     } as unknown as jest.Mocked<RealtimeOutboxDispatcherService>;
 
     matchingOrderBookService = new MatchingOrderBookService();
-    orderLockingService = new OrderLockingService();
+    ordersRepository = new OrdersRepository(prismaService);
     tradeSettlementService = new TradeSettlementService();
     walletFundsService = new WalletFundsService();
 
     matchingService = new MatchingService(
       prismaService,
       matchingOrderBookService,
-      orderLockingService,
+      ordersRepository,
       tradeSettlementService,
       realtimeOutboxService,
       realtimeOutboxDispatcherService,
