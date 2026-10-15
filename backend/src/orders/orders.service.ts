@@ -4,11 +4,9 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { OrderSide, OrderStatus, Prisma } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import { OrderSide, OrderStatus } from '@prisma/client';
 import { buildPaginatedResponse } from '../common/pagination';
 import { parsePositiveDecimalInput } from '../common/decimal-input';
-import { buildIdPrefixFilter } from '../common/id-filter';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { OrderMatchingOutboxDispatcherService } from '../queue/order-matching-outbox-dispatcher.service';
 import { OrderMatchingOutboxService } from '../queue/order-matching-outbox.service';
@@ -16,18 +14,17 @@ import { RealtimeOutboxDispatcherService } from '../realtime/realtime-outbox-dis
 import { RealtimeOutboxService } from '../realtime/realtime-outbox.service';
 import { OrderSummary, toOrderSummary } from './order.mapper';
 import { WalletFundsService } from '../wallets/wallet-funds.service';
-import { OrderLockingService } from './order-locking.service';
+import { OrdersRepository } from './orders.repository';
 
 @Injectable()
 export class OrdersService {
   private readonly logger = new Logger(OrdersService.name);
 
   constructor(
-    private readonly prismaService: PrismaService,
+    private readonly ordersRepository: OrdersRepository,
     private readonly orderMatchingOutboxService: OrderMatchingOutboxService,
     private readonly orderMatchingOutboxDispatcherService: OrderMatchingOutboxDispatcherService,
     private readonly walletFundsService: WalletFundsService,
-    private readonly orderLockingService: OrderLockingService,
     private readonly realtimeOutboxService: RealtimeOutboxService,
     private readonly realtimeOutboxDispatcherService: RealtimeOutboxDispatcherService,
   ) {}
@@ -47,11 +44,12 @@ export class OrdersService {
     const amount = parsePositiveDecimalInput(amountInput, 'amount');
     const price = parsePositiveDecimalInput(priceInput, 'price');
 
-    const order = await this.prismaService.$transaction(
+    const order = await this.ordersRepository.runInTransaction(
       async (transactionClient) => {
-        const wallet = await transactionClient.wallet.findUnique({
-          where: { userId },
-        });
+        const wallet = await this.ordersRepository.findWalletByUserId(
+          transactionClient,
+          userId,
+        );
 
         if (!wallet) {
           throw new NotFoundException('Wallet not found');
@@ -65,16 +63,15 @@ export class OrdersService {
           price,
         );
 
-        const order = await transactionClient.order.create({
-          data: {
+        const order = await this.ordersRepository.createOrder(
+          transactionClient,
+          {
             userId,
             side,
-            status: OrderStatus.QUEUED,
+            amount,
             price,
-            originalAmount: amount,
-            remainingAmount: amount,
           },
-        });
+        );
 
         await this.orderMatchingOutboxService.appendOrder(
           transactionClient,
@@ -98,32 +95,10 @@ export class OrdersService {
   }
 
   async getActiveOrders(userId: string, query: PaginationQueryDto) {
-    const idFilter = buildIdPrefixFilter(query.id);
-
-    const where: Prisma.OrderWhereInput = {
+    const { orders, totalItems } = await this.ordersRepository.findActiveOrders(
       userId,
-      status: {
-        in: [...this.activeStatuses],
-      },
-      ...(idFilter ? { id: idFilter } : {}),
-    };
-
-    const [totalItems, orders] = await Promise.all([
-      this.prismaService.order.count({ where }),
-      this.prismaService.order.findMany({
-        where,
-        orderBy: [
-          {
-            createdAt: 'desc',
-          },
-          {
-            sequence: 'desc',
-          },
-        ],
-        skip: (query.page - 1) * query.pageSize,
-        take: query.pageSize,
-      }),
-    ]);
+      query,
+    );
 
     return buildPaginatedResponse(
       orders.map(toOrderSummary),
@@ -134,9 +109,9 @@ export class OrdersService {
   }
 
   async cancelOrder(userId: string, orderId: string): Promise<OrderSummary> {
-    const cancelledOrder = await this.prismaService.$transaction(
+    const cancelledOrder = await this.ordersRepository.runInTransaction(
       async (transactionClient) => {
-        const order = await this.orderLockingService.lockAndLoadOrder(
+        const order = await this.ordersRepository.lockAndLoadOrder(
           transactionClient,
           orderId,
           userId,
@@ -150,22 +125,19 @@ export class OrdersService {
           throw new BadRequestException('Order cannot be cancelled');
         }
 
-        const wallet = await transactionClient.wallet.findUnique({
-          where: { userId },
-        });
+        const wallet = await this.ordersRepository.findWalletByUserId(
+          transactionClient,
+          userId,
+        );
 
         if (!wallet) {
           throw new NotFoundException('Wallet not found');
         }
 
-        await transactionClient.order.update({
-          where: {
-            id: orderId,
-          },
-          data: {
-            status: OrderStatus.CANCELLED,
-          },
-        });
+        const cancelledOrder = await this.ordersRepository.cancelOrder(
+          transactionClient,
+          orderId,
+        );
 
         await this.walletFundsService.releaseFunds(transactionClient, order);
         await this.realtimeOutboxService.appendEvents(transactionClient, [
@@ -184,16 +156,12 @@ export class OrdersService {
           },
         ]);
 
-        return toOrderSummary({
-          ...order,
-          status: OrderStatus.CANCELLED,
-          updatedAt: new Date(),
-        });
+        return cancelledOrder;
       },
     );
 
     await this.dispatchRealtimeOutbox();
-    return cancelledOrder;
+    return toOrderSummary(cancelledOrder);
   }
 
   private isActiveStatus(
