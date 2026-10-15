@@ -3,7 +3,7 @@ import { OrderSide, OrderStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RealtimeOutboxDispatcherService } from '../realtime/realtime-outbox-dispatcher.service';
 import { RealtimeOutboxService } from '../realtime/realtime-outbox.service';
-import { OrderLockingService } from '../orders/order-locking.service';
+import { OrdersRepository } from '../orders/orders.repository';
 import { MatchingOrderBookService } from './matching-order-book.service';
 import { TradeSettlementService } from './trade-settlement.service';
 import { WalletFundsService } from '../wallets/wallet-funds.service';
@@ -15,7 +15,7 @@ export class MatchingService {
   constructor(
     private readonly prismaService: PrismaService,
     private readonly matchingOrderBookService: MatchingOrderBookService,
-    private readonly orderLockingService: OrderLockingService,
+    private readonly ordersRepository: OrdersRepository,
     private readonly tradeSettlementService: TradeSettlementService,
     private readonly realtimeOutboxService: RealtimeOutboxService,
     private readonly realtimeOutboxDispatcherService: RealtimeOutboxDispatcherService,
@@ -25,7 +25,7 @@ export class MatchingService {
   async processOrder(orderId: string): Promise<void> {
     const eventsWereStored = await this.prismaService.$transaction<boolean>(
       async (transactionClient) => {
-        const taker = await this.orderLockingService.lockAndLoadOrder(
+        const taker = await this.ordersRepository.lockAndLoadOrder(
           transactionClient,
           orderId,
         );
@@ -220,7 +220,7 @@ export class MatchingService {
   async rejectOrderAfterFailedProcessing(orderId: string): Promise<void> {
     const eventWasStored = await this.prismaService.$transaction<boolean>(
       async (transactionClient) => {
-        const order = await this.orderLockingService.lockAndLoadOrder(
+        const order = await this.ordersRepository.lockAndLoadOrder(
           transactionClient,
           orderId,
         );
