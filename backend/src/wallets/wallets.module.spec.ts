@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from '../prisma/prisma.service';
+import { WalletFundsService } from './wallet-funds.service';
 import { WalletsModule } from './wallets.module';
 import { WalletsRepository } from './wallets.repository';
 import { WalletsService } from './wallets.service';
@@ -8,6 +9,7 @@ class WalletConsumer {
   constructor(
     readonly walletsService: WalletsService,
     readonly walletsRepository: WalletsRepository,
+    readonly walletFundsService: WalletFundsService,
   ) {}
 }
 
@@ -21,11 +23,12 @@ describe('WalletsModule', () => {
       providers: [
         {
           provide: WalletConsumer,
-          inject: [WalletsService, WalletsRepository],
+          inject: [WalletsService, WalletsRepository, WalletFundsService],
           useFactory: (
             service: WalletsService,
             repository: WalletsRepository,
-          ) => new WalletConsumer(service, repository),
+            fundsService: WalletFundsService,
+          ) => new WalletConsumer(service, repository, fundsService),
         },
       ],
     })
@@ -46,6 +49,12 @@ describe('WalletsModule', () => {
     );
     expect(consumer.walletsRepository).toBe(
       walletsModule.get(WalletsRepository, { strict: true }),
+    );
+  });
+
+  it('should keep the funds service available to existing order and matching consumers', () => {
+    expect(module.get(WalletConsumer).walletFundsService).toBe(
+      module.select(WalletsModule).get(WalletFundsService, { strict: true }),
     );
   });
 
