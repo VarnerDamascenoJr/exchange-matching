@@ -7,7 +7,8 @@ import { OrdersRepository } from '../orders/orders.repository';
 import { MatchingOrderBookService } from './matching-order-book.service';
 import { MatchingService } from './matching.service';
 import { TradeSettlementService } from './trade-settlement.service';
-import { WalletFundsService } from '../wallets/wallet-funds.service';
+import { WalletsService } from '../wallets/wallets.service';
+import { WalletsRepository } from '../wallets/wallets.repository';
 
 const buildOrder = (overrides?: {
   id?: string;
@@ -57,7 +58,7 @@ describe('MatchingService', () => {
   let matchingOrderBookService: MatchingOrderBookService;
   let ordersRepository: OrdersRepository;
   let tradeSettlementService: TradeSettlementService;
-  let walletFundsService: WalletFundsService;
+  let walletsService: WalletsService;
   let transactionClient: {
     $queryRaw: jest.Mock;
     order: {
@@ -113,8 +114,10 @@ describe('MatchingService', () => {
 
     matchingOrderBookService = new MatchingOrderBookService();
     ordersRepository = new OrdersRepository(prismaService);
-    tradeSettlementService = new TradeSettlementService();
-    walletFundsService = new WalletFundsService();
+    tradeSettlementService = new TradeSettlementService(
+      new WalletsRepository(prismaService),
+    );
+    walletsService = new WalletsService(new WalletsRepository(prismaService));
 
     matchingService = new MatchingService(
       prismaService,
@@ -123,7 +126,7 @@ describe('MatchingService', () => {
       tradeSettlementService,
       realtimeOutboxService,
       realtimeOutboxDispatcherService,
-      walletFundsService,
+      walletsService,
     );
   });
 
