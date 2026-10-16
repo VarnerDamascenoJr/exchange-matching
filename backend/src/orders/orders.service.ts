@@ -13,7 +13,7 @@ import { OrderMatchingOutboxService } from '../queue/order-matching-outbox.servi
 import { RealtimeOutboxDispatcherService } from '../realtime/realtime-outbox-dispatcher.service';
 import { RealtimeOutboxService } from '../realtime/realtime-outbox.service';
 import { OrderSummary, toOrderSummary } from './order.mapper';
-import { WalletFundsService } from '../wallets/wallet-funds.service';
+import { WalletsService } from '../wallets/wallets.service';
 import { OrdersRepository } from './orders.repository';
 
 @Injectable()
@@ -24,7 +24,7 @@ export class OrdersService {
     private readonly ordersRepository: OrdersRepository,
     private readonly orderMatchingOutboxService: OrderMatchingOutboxService,
     private readonly orderMatchingOutboxDispatcherService: OrderMatchingOutboxDispatcherService,
-    private readonly walletFundsService: WalletFundsService,
+    private readonly walletsService: WalletsService,
     private readonly realtimeOutboxService: RealtimeOutboxService,
     private readonly realtimeOutboxDispatcherService: RealtimeOutboxDispatcherService,
   ) {}
@@ -46,16 +46,16 @@ export class OrdersService {
 
     const order = await this.ordersRepository.runInTransaction(
       async (transactionClient) => {
-        const wallet = await this.ordersRepository.findWalletByUserId(
-          transactionClient,
+        const wallet = await this.walletsService.findByUserId(
           userId,
+          transactionClient,
         );
 
         if (!wallet) {
           throw new NotFoundException('Wallet not found');
         }
 
-        await this.walletFundsService.reserveFunds(
+        await this.walletsService.reserveFunds(
           transactionClient,
           wallet,
           side,
@@ -125,9 +125,9 @@ export class OrdersService {
           throw new BadRequestException('Order cannot be cancelled');
         }
 
-        const wallet = await this.ordersRepository.findWalletByUserId(
-          transactionClient,
+        const wallet = await this.walletsService.findByUserId(
           userId,
+          transactionClient,
         );
 
         if (!wallet) {
@@ -139,7 +139,7 @@ export class OrdersService {
           orderId,
         );
 
-        await this.walletFundsService.releaseFunds(transactionClient, order);
+        await this.walletsService.releaseFunds(transactionClient, order);
         await this.realtimeOutboxService.appendEvents(transactionClient, [
           {
             type: 'market.changed',
