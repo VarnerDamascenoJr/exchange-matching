@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common';
-import { WalletFundsService } from './wallet-funds.service';
+import { PrismaModule } from '../prisma/prisma.module';
+import { WalletsRepository } from './wallets.repository';
 import { WalletsService } from './wallets.service';
 
 @Module({
-  providers: [WalletFundsService, WalletsService],
-  exports: [WalletFundsService, WalletsService],
+  imports: [PrismaModule],
+  providers: [WalletsRepository, WalletsService],
+  exports: [WalletsRepository, WalletsService],
 })
 export class WalletsModule {}
