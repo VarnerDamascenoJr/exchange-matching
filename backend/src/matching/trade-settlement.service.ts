@@ -3,16 +3,11 @@ import {
   Order,
   OrderSide,
   Prisma,
-  PrismaClient,
   TradeFeeAsset,
   Wallet,
 } from '@prisma/client';
 import { multiplyScaled, subtractScaled } from '../common/decimal.utils';
-
-type TransactionClient = Omit<
-  PrismaClient,
-  '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
->;
+import { WalletsRepository } from '../wallets/wallets.repository';
 
 export type TradeFeeDetails = {
   makerFeeRate: Prisma.Decimal;
@@ -29,36 +24,20 @@ export class TradeSettlementService {
   private static readonly MAKER_FEE_RATE = new Prisma.Decimal('0.005');
   private static readonly TAKER_FEE_RATE = new Prisma.Decimal('0.003');
 
-  async lockAndLoadWallets(
-    transactionClient: TransactionClient,
+  constructor(private readonly walletsRepository: WalletsRepository) {}
+
+  lockAndLoadWallets(
+    transactionClient: Prisma.TransactionClient,
     userIds: string[],
   ): Promise<Map<string, Wallet>> {
-    const uniqueUserIds = [...new Set(userIds)].sort();
-    const userIdParameters = Prisma.join(
-      uniqueUserIds.map((userId) => Prisma.sql`${userId}`),
+    return this.walletsRepository.lockAndLoadByUserIds(
+      transactionClient,
+      userIds,
     );
-
-    await transactionClient.$queryRaw`
-      SELECT "id"
-      FROM "wallets"
-      WHERE "user_id" IN (${userIdParameters})
-      ORDER BY "user_id" ASC
-      FOR UPDATE
-    `;
-
-    const wallets = await transactionClient.wallet.findMany({
-      where: {
-        userId: {
-          in: uniqueUserIds,
-        },
-      },
-    });
-
-    return new Map(wallets.map((wallet) => [wallet.userId, wallet]));
   }
 
   async applyTradeBalances(
-    transactionClient: TransactionClient,
+    transactionClient: Prisma.TransactionClient,
     taker: Order,
     maker: Order,
     takerWallet: Wallet,
@@ -131,7 +110,7 @@ export class TradeSettlementService {
   }
 
   private async applyBuyTakerBalances(
-    transactionClient: TransactionClient,
+    transactionClient: Prisma.TransactionClient,
     taker: Order,
     maker: Order,
     takerWallet: Wallet,
@@ -153,11 +132,10 @@ export class TradeSettlementService {
     const receivedBtc = subtractScaled(tradeAmount, takerFeeAmount);
     const receivedUsd = subtractScaled(executedCost, makerFeeAmount);
 
-    await transactionClient.wallet.update({
-      where: {
-        userId: takerWallet.userId,
-      },
-      data: {
+    await this.walletsRepository.updateBalances(
+      transactionClient,
+      takerWallet.userId,
+      {
         reservedUsd: {
           decrement: reservedCost,
         },
@@ -168,13 +146,12 @@ export class TradeSettlementService {
           increment: receivedBtc,
         },
       },
-    });
+    );
 
-    await transactionClient.wallet.update({
-      where: {
-        userId: makerWallet.userId,
-      },
-      data: {
+    await this.walletsRepository.updateBalances(
+      transactionClient,
+      makerWallet.userId,
+      {
         reservedBtc: {
           decrement: tradeAmount,
         },
@@ -182,7 +159,7 @@ export class TradeSettlementService {
           increment: receivedUsd,
         },
       },
-    });
+    );
 
     this.logger.log(
       `Matched BUY taker ${taker.id} with SELL maker ${maker.id} for ${tradeAmount.toFixed(8)} BTC at ${tradePrice.toFixed(8)}`,
@@ -190,7 +167,7 @@ export class TradeSettlementService {
   }
 
   private async applySellTakerBalances(
-    transactionClient: TransactionClient,
+    transactionClient: Prisma.TransactionClient,
     taker: Order,
     maker: Order,
     takerWallet: Wallet,
@@ -210,11 +187,10 @@ export class TradeSettlementService {
     const receivedUsd = subtractScaled(executedCost, takerFeeAmount);
     const receivedBtc = subtractScaled(tradeAmount, makerFeeAmount);
 
-    await transactionClient.wallet.update({
-      where: {
-        userId: takerWallet.userId,
-      },
-      data: {
+    await this.walletsRepository.updateBalances(
+      transactionClient,
+      takerWallet.userId,
+      {
         reservedBtc: {
           decrement: tradeAmount,
         },
@@ -222,13 +198,12 @@ export class TradeSettlementService {
           increment: receivedUsd,
         },
       },
-    });
+    );
 
-    await transactionClient.wallet.update({
-      where: {
-        userId: makerWallet.userId,
-      },
-      data: {
+    await this.walletsRepository.updateBalances(
+      transactionClient,
+      makerWallet.userId,
+      {
         reservedUsd: {
           decrement: executedCost,
         },
@@ -236,7 +211,7 @@ export class TradeSettlementService {
           increment: receivedBtc,
         },
       },
-    });
+    );
 
     this.logger.log(
       `Matched SELL taker ${taker.id} with BUY maker ${maker.id} for ${tradeAmount.toFixed(8)} BTC at ${tradePrice.toFixed(8)}`,

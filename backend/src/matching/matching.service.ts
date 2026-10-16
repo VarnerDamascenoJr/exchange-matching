@@ -6,7 +6,7 @@ import { RealtimeOutboxService } from '../realtime/realtime-outbox.service';
 import { OrdersRepository } from '../orders/orders.repository';
 import { MatchingOrderBookService } from './matching-order-book.service';
 import { TradeSettlementService } from './trade-settlement.service';
-import { WalletFundsService } from '../wallets/wallet-funds.service';
+import { WalletsService } from '../wallets/wallets.service';
 
 @Injectable()
 export class MatchingService {
@@ -19,7 +19,7 @@ export class MatchingService {
     private readonly tradeSettlementService: TradeSettlementService,
     private readonly realtimeOutboxService: RealtimeOutboxService,
     private readonly realtimeOutboxDispatcherService: RealtimeOutboxDispatcherService,
-    private readonly walletFundsService: WalletFundsService,
+    private readonly walletsService: WalletsService,
   ) {}
 
   async processOrder(orderId: string): Promise<void> {
@@ -233,7 +233,7 @@ export class MatchingService {
           where: { id: order.id },
           data: { status: OrderStatus.REJECTED },
         });
-        await this.walletFundsService.releaseFunds(transactionClient, order);
+        await this.walletsService.releaseFunds(transactionClient, order);
         await this.realtimeOutboxService.appendEvent(transactionClient, {
           type: 'account.changed',
           reason: 'order-rejected',
