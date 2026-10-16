@@ -14,13 +14,6 @@ export class OrdersRepository {
     return this.prismaService.$transaction(operation);
   }
 
-  findWalletByUserId(
-    transactionClient: Prisma.TransactionClient,
-    userId: string,
-  ) {
-    return transactionClient.wallet.findUnique({ where: { userId } });
-  }
-
   createOrder(
     transactionClient: Prisma.TransactionClient,
     input: {
