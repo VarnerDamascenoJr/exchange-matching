@@ -5,7 +5,8 @@ import { OrderMatchingOutboxDispatcherService } from '../queue/order-matching-ou
 import { OrderMatchingOutboxService } from '../queue/order-matching-outbox.service';
 import { RealtimeOutboxDispatcherService } from '../realtime/realtime-outbox-dispatcher.service';
 import { RealtimeOutboxService } from '../realtime/realtime-outbox.service';
-import { WalletFundsService } from '../wallets/wallet-funds.service';
+import { WalletsService } from '../wallets/wallets.service';
+import { WalletsRepository } from '../wallets/wallets.repository';
 import { OrdersService } from './orders.service';
 import { OrdersRepository } from './orders.repository';
 
@@ -56,7 +57,7 @@ describe('OrdersService', () => {
   let realtimeOutboxDispatcherService: jest.Mocked<RealtimeOutboxDispatcherService>;
   let rootOrderFindManyMock: jest.Mock;
   let rootOrderCountMock: jest.Mock;
-  let walletFundsService: WalletFundsService;
+  let walletsService: WalletsService;
   let transactionClient: {
     $queryRaw: jest.Mock;
     wallet: {
@@ -130,13 +131,13 @@ describe('OrdersService', () => {
       dispatchPending: jest.fn(),
     } as unknown as jest.Mocked<RealtimeOutboxDispatcherService>;
 
-    walletFundsService = new WalletFundsService();
+    walletsService = new WalletsService(new WalletsRepository(prismaService));
 
     ordersService = new OrdersService(
       new OrdersRepository(prismaService),
       orderMatchingOutboxService,
       orderMatchingOutboxDispatcherService,
-      walletFundsService,
+      walletsService,
       realtimeOutboxService,
       realtimeOutboxDispatcherService,
     );
