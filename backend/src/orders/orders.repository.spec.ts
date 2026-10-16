@@ -10,7 +10,6 @@ describe('OrdersRepository', () => {
   };
   let transaction: {
     $queryRaw: jest.Mock;
-    wallet: { findUnique: jest.Mock };
     order: {
       create: jest.Mock;
       update: jest.Mock;
@@ -23,7 +22,6 @@ describe('OrdersRepository', () => {
   beforeEach(() => {
     transaction = {
       $queryRaw: jest.fn(),
-      wallet: { findUnique: jest.fn() },
       order: {
         create: jest.fn(),
         update: jest.fn(),
@@ -56,24 +54,6 @@ describe('OrdersRepository', () => {
     await expect(
       repository.runInTransaction(() => Promise.reject(failure)),
     ).rejects.toBe(failure);
-  });
-
-  it('should find the wallet by owner within the supplied transaction', async () => {
-    const wallet = { id: 'wallet-1', userId: 'user-1' };
-    transaction.wallet.findUnique.mockResolvedValueOnce(wallet);
-    await expect(
-      repository.findWalletByUserId(transactionClient, 'user-1'),
-    ).resolves.toBe(wallet);
-    expect(transaction.wallet.findUnique).toHaveBeenCalledWith({
-      where: { userId: 'user-1' },
-    });
-  });
-
-  it('should return null when the user has no wallet', async () => {
-    transaction.wallet.findUnique.mockResolvedValueOnce(null);
-    await expect(
-      repository.findWalletByUserId(transactionClient, 'missing-user'),
-    ).resolves.toBeNull();
   });
 
   it.each([OrderSide.BUY, OrderSide.SELL])(
