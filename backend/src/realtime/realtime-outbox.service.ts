@@ -1,55 +1,52 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma, PrismaClient } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
+import {
+  RealtimeOutboxEntry,
+  RealtimeOutboxRepository,
+} from './realtime-outbox.repository';
 import { RealtimeDispatchEvent } from './realtime.types';
-
-type TransactionClient = Omit<
-  PrismaClient,
-  '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
->;
 
 @Injectable()
 export class RealtimeOutboxService {
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(
+    private readonly realtimeOutboxRepository: RealtimeOutboxRepository,
+  ) {}
 
   async appendEvent(
-    transactionClient: TransactionClient,
+    transactionClient: Prisma.TransactionClient,
     event: RealtimeDispatchEvent,
   ): Promise<void> {
     await this.appendEvents(transactionClient, [event]);
   }
 
   async appendEvents(
-    transactionClient: TransactionClient,
+    transactionClient: Prisma.TransactionClient,
     events: RealtimeDispatchEvent[],
   ): Promise<void> {
     if (events.length === 0) {
       return;
     }
 
-    const rows = events.map((event) => {
-      const eventId = this.createOutboxId();
-      const payload = JSON.stringify(event);
-
-      return Prisma.sql`(
-        ${eventId},
-        ${event.type},
-        CAST(${payload} AS JSONB)
-      )`;
-    });
-
-    await transactionClient.$executeRaw(Prisma.sql`
-      INSERT INTO "realtime_event_outbox" (
-        "id",
-        "event_type",
-        "payload"
-      )
-      VALUES ${Prisma.join(rows)}
-    `);
+    await this.realtimeOutboxRepository.insertEvents(
+      this.buildEntries(events),
+      transactionClient,
+    );
   }
 
   async appendNow(events: RealtimeDispatchEvent[]): Promise<void> {
-    await this.appendEvents(this.prismaService, events);
+    if (events.length === 0) {
+      return;
+    }
+
+    await this.realtimeOutboxRepository.insertEvents(this.buildEntries(events));
+  }
+
+  private buildEntries(events: RealtimeDispatchEvent[]): RealtimeOutboxEntry[] {
+    return events.map((event) => ({
+      id: this.createOutboxId(),
+      eventType: event.type,
+      payload: JSON.stringify(event),
+    }));
   }
 
   private createOutboxId(): string {

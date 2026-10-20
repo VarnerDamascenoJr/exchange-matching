@@ -5,8 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import { RealtimeOutboxRepository } from './realtime-outbox.repository';
 import {
   REALTIME_OUTBOX_BATCH_SIZE,
   REALTIME_OUTBOX_CLAIM_TIMEOUT_SECONDS,
@@ -19,12 +18,6 @@ import {
 import { RealtimePublisherService } from './realtime.publisher';
 import { RealtimeDispatchEvent } from './realtime.types';
 
-type ClaimedRealtimeOutboxRow = {
-  id: string;
-  claim_token: string;
-  payload: RealtimeDispatchEvent | string;
-};
-
 @Injectable()
 export class RealtimeOutboxDispatcherService
   implements OnModuleInit, OnApplicationShutdown
@@ -35,7 +28,7 @@ export class RealtimeOutboxDispatcherService
   private lastMaintenanceAt = 0;
 
   constructor(
-    private readonly prismaService: PrismaService,
+    private readonly realtimeOutboxRepository: RealtimeOutboxRepository,
     private readonly configService: ConfigService,
     private readonly realtimePublisherService: RealtimePublisherService,
   ) {}
@@ -75,7 +68,11 @@ export class RealtimeOutboxDispatcherService
 
   private async dispatchLoop(): Promise<void> {
     while (true) {
-      const claimedRows = await this.claimNextBatch();
+      const claimedRows = await this.realtimeOutboxRepository.claimNextBatch(
+        this.createClaimToken(),
+        REALTIME_OUTBOX_BATCH_SIZE,
+        REALTIME_OUTBOX_CLAIM_TIMEOUT_SECONDS,
+      );
 
       if (claimedRows.length === 0) {
         return;
@@ -85,7 +82,10 @@ export class RealtimeOutboxDispatcherService
         try {
           const event = this.normalizePayload(row.payload);
           await this.realtimePublisherService.publishEvent(event);
-          await this.markAsPublished(row.id, row.claim_token);
+          await this.realtimeOutboxRepository.markAsPublished(
+            row.id,
+            row.claim_token,
+          );
         } catch (error) {
           const message =
             error instanceof Error ? error.message : 'Unknown dispatch error';
@@ -95,75 +95,15 @@ export class RealtimeOutboxDispatcherService
             error instanceof Error ? error.stack : undefined,
           );
 
-          await this.releaseClaim(row.id, row.claim_token, message);
+          await this.realtimeOutboxRepository.releaseClaim(
+            row.id,
+            row.claim_token,
+            message,
+            REALTIME_OUTBOX_MAX_ATTEMPTS,
+          );
         }
       }
     }
-  }
-
-  private async claimNextBatch(): Promise<ClaimedRealtimeOutboxRow[]> {
-    const claimToken = this.createClaimToken();
-    const claimTimeoutInterval = Prisma.raw(
-      `INTERVAL '${REALTIME_OUTBOX_CLAIM_TIMEOUT_SECONDS} seconds'`,
-    );
-
-    return this.prismaService.$queryRaw<ClaimedRealtimeOutboxRow[]>(Prisma.sql`
-      WITH claimable AS (
-        SELECT "id"
-        FROM "realtime_event_outbox"
-        WHERE "published_at" IS NULL
-          AND "dead_lettered_at" IS NULL
-          AND (
-            "claimed_at" IS NULL
-            OR "claimed_at" < NOW() - ${claimTimeoutInterval}
-          )
-        ORDER BY "created_at" ASC
-        LIMIT ${REALTIME_OUTBOX_BATCH_SIZE}
-        FOR UPDATE SKIP LOCKED
-      )
-      UPDATE "realtime_event_outbox" AS outbox
-      SET
-        "claimed_at" = NOW(),
-        "claim_token" = ${claimToken}
-      FROM claimable
-      WHERE outbox."id" = claimable."id"
-      RETURNING outbox."id", outbox."claim_token", outbox."payload"
-    `);
-  }
-
-  private async markAsPublished(id: string, claimToken: string): Promise<void> {
-    await this.prismaService.$executeRaw(Prisma.sql`
-      UPDATE "realtime_event_outbox"
-      SET
-        "published_at" = NOW(),
-        "claimed_at" = NULL,
-        "claim_token" = NULL,
-        "last_error" = NULL
-      WHERE "id" = ${id}
-        AND "claim_token" = ${claimToken}
-    `);
-  }
-
-  private async releaseClaim(
-    id: string,
-    claimToken: string,
-    lastError: string,
-  ): Promise<void> {
-    await this.prismaService.$executeRaw(Prisma.sql`
-      UPDATE "realtime_event_outbox"
-      SET
-        "attempt_count" = "attempt_count" + 1,
-        "claimed_at" = NULL,
-        "claim_token" = NULL,
-        "last_error" = ${lastError},
-        "dead_lettered_at" = CASE
-          WHEN "attempt_count" + 1 >= ${REALTIME_OUTBOX_MAX_ATTEMPTS}
-            THEN NOW()
-          ELSE NULL
-        END
-      WHERE "id" = ${id}
-        AND "claim_token" = ${claimToken}
-    `);
   }
 
   private normalizePayload(
@@ -183,14 +123,10 @@ export class RealtimeOutboxDispatcherService
       now - REALTIME_OUTBOX_DEAD_LETTER_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
     );
 
-    await this.prismaService.realtimeEventOutbox.deleteMany({
-      where: {
-        OR: [
-          { publishedAt: { lte: publishedCutoff } },
-          { deadLetteredAt: { lte: deadLetterCutoff } },
-        ],
-      },
-    });
+    await this.realtimeOutboxRepository.pruneExpiredEvents(
+      publishedCutoff,
+      deadLetterCutoff,
+    );
   }
 
   private async runMaintenanceIfDue(): Promise<void> {
