@@ -1,13 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import { OrderSide, Prisma } from '@prisma/client';
-import { buildIdPrefixFilter } from '../common/id-filter';
+import { OrderSide } from '@prisma/client';
 import { buildPaginatedResponse } from '../common/pagination';
-import { PrismaService } from '../prisma/prisma.service';
+import { TradesRepository } from './trades.repository';
 import { UserTradeHistoryItem, toUserTradeHistoryItem } from './trade.mapper';
 
 @Injectable()
 export class TradesService {
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(private readonly tradesRepository: TradesRepository) {}
 
   async getUserHistory(
     userId: string,
@@ -15,42 +14,12 @@ export class TradesService {
     pageSize: number,
     id?: string,
   ) {
-    const idFilter = buildIdPrefixFilter(id);
-
-    const where: Prisma.TradeWhereInput = {
-      ...(idFilter ? { id: idFilter } : {}),
-      OR: [{ buyOrder: { userId } }, { sellOrder: { userId } }],
-    };
-
-    const [totalItems, trades] = await Promise.all([
-      this.prismaService.trade.count({ where }),
-      this.prismaService.trade.findMany({
-        where,
-        orderBy: [{ createdAt: 'desc' }, { sequence: 'desc' }],
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-        select: {
-          id: true,
-          price: true,
-          amount: true,
-          createdAt: true,
-          makerFeeAmount: true,
-          makerFeeAsset: true,
-          takerFeeAmount: true,
-          takerFeeAsset: true,
-          buyOrder: {
-            select: {
-              userId: true,
-            },
-          },
-          takerOrder: {
-            select: {
-              userId: true,
-            },
-          },
-        },
-      }),
-    ]);
+    const { trades, totalItems } = await this.tradesRepository.findUserHistory(
+      userId,
+      page,
+      pageSize,
+      id,
+    );
 
     const items: UserTradeHistoryItem[] = trades.map((trade) => {
       const side =
