@@ -1,7 +1,6 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
-import { Prisma, User, Wallet } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
-import { buildInitialWalletCreateInput } from '../wallets/wallet.constants';
+import { User, Wallet } from '@prisma/client';
+import { UsersRepository } from './users.repository';
 
 export type UserWithWallet = User & {
   wallet: Wallet;
@@ -13,47 +12,28 @@ type UserWithOptionalWallet = User & {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(private readonly usersRepository: UsersRepository) {}
 
   async findById(id: string): Promise<UserWithWallet | null> {
-    const user = await this.prismaService.user.findUnique({
-      where: { id },
-      include: { wallet: true },
-    });
+    const user = await this.usersRepository.findById(id);
 
     return user ? this.ensureWallet(user) : null;
   }
 
   async findByUsername(username: string): Promise<UserWithWallet | null> {
-    const user = await this.prismaService.user.findUnique({
-      where: { username },
-      include: { wallet: true },
-    });
+    const user = await this.usersRepository.findByUsername(username);
 
     return user ? this.ensureWallet(user) : null;
   }
 
   async createWithWallet(username: string): Promise<UserWithWallet> {
-    const user = await this.prismaService.$transaction((transactionClient) =>
-      transactionClient.user.create({
-        data: {
-          username,
-          wallet: {
-            create: buildInitialWalletCreateInput(),
-          },
-        },
-        include: { wallet: true },
-      }),
-    );
+    const user = await this.usersRepository.createWithWallet(username);
 
     return this.ensureWallet(user);
   }
 
   isUniqueUsernameViolation(error: unknown): boolean {
-    return (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === 'P2002'
-    );
+    return this.usersRepository.isUniqueUsernameViolation(error);
   }
 
   private ensureWallet(user: UserWithOptionalWallet): UserWithWallet {
