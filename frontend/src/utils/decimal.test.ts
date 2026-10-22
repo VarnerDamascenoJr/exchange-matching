@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { multiplyDecimals, parseDecimal, sanitizeDecimalInput } from './decimal';
+import cases from '../../../shared/decimal-cases.json';
+import { orderFormSchema } from '../features/orders/schemas/orderFormSchema';
 
 describe('decimal utils', () => {
   it('multiplies strings with 8 decimal places', () => {
@@ -16,5 +18,24 @@ describe('decimal utils', () => {
     expect(sanitizeDecimalInput('12..34')).toBe('12.34');
     expect(sanitizeDecimalInput('.5')).toBe('0.5');
     expect(sanitizeDecimalInput('10.123456789')).toBe('10.12345678');
+  });
+
+  it.each(cases.products)('agrees with the backend for $amount × $price', ({ amount, price, expected }) => {
+    expect(multiplyDecimals(amount, price)).toBe(expected);
+    expect(orderFormSchema.safeParse({ amount, price }).success).toBe(expected !== '0.00000000');
+  });
+
+  it.each(cases.validInputs)('preserves valid input %s', (amount) => {
+    const values = { amount, price: '1' };
+    expect(orderFormSchema.parse(values)).toEqual(values);
+  });
+
+  it.each(cases.invalidInputs)('rejects invalid input %s', (value) => {
+    expect(orderFormSchema.safeParse({ amount: value, price: '1' }).success).toBe(false);
+    expect(orderFormSchema.safeParse({ amount: '1', price: value }).success).toBe(false);
+  });
+
+  it.each(cases.overflowProducts)('rejects cost overflow for $amount × $price', (values) => {
+    expect(orderFormSchema.safeParse(values).success).toBe(false);
   });
 });
