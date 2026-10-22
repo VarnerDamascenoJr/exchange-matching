@@ -5,7 +5,9 @@ const formatDecimal = (value?: string | null) => {
     return null;
   }
 
-  return parseDecimal(value).toFixed(2);
+  // Keep every significant API decimal (scale 8), with at least two places.
+  // This presentation format must not be used to populate order payloads.
+  return parseDecimal(value).toFixed(8).replace(/(\.\d{2,}?)0+$/, '$1');
 };
 
 export const toDisplayDecimal = (value?: string | null) =>

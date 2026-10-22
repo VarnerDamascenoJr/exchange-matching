@@ -19,4 +19,18 @@ describe('orderFormSchema', () => {
 
     expect(result.success).toBe(false);
   });
+
+  it('preserves small and large decimal strings without numeric conversion', () => {
+    const values = {
+      amount: '0.00000001',
+      price: '99999999999999999999.12345678',
+    };
+
+    expect(orderFormSchema.parse(values)).toEqual(values);
+  });
+
+  it.each(['0', '0.00000000', ''])('rejects a nonpositive or missing value: %s', (value) => {
+    expect(orderFormSchema.safeParse({ amount: value, price: '1' }).success).toBe(false);
+    expect(orderFormSchema.safeParse({ amount: '1', price: value }).success).toBe(false);
+  });
 });
