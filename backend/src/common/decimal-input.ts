@@ -1,35 +1,8 @@
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { DECIMAL_PRECISION, DECIMAL_SCALE } from './decimal.utils';
+import { assertDecimalFitsSchema } from './decimal.utils';
 
-export const assertDecimalFitsSchema = (
-  value: Prisma.Decimal,
-  fieldName: string,
-) => {
-  const normalizedValue = value.toFixed();
-  const unsignedValue = normalizedValue.startsWith('-')
-    ? normalizedValue.slice(1)
-    : normalizedValue;
-  const [integerPart, fractionalPart = ''] = unsignedValue.split('.');
-  const normalizedIntegerPart = integerPart.replace(/^0+(?=\d)/, '');
-  const integerDigits =
-    normalizedIntegerPart.length > 0 ? normalizedIntegerPart.length : 1;
-  const significantFractionalPart = fractionalPart.replace(/0+$/, '');
-  const fractionalDigits = significantFractionalPart.length;
-  const totalDigits = integerDigits + fractionalDigits;
-
-  if (fractionalDigits > DECIMAL_SCALE) {
-    throw new BadRequestException(
-      `${fieldName} must have at most ${DECIMAL_SCALE} decimal places`,
-    );
-  }
-
-  if (totalDigits > DECIMAL_PRECISION) {
-    throw new BadRequestException(
-      `${fieldName} must fit within DECIMAL(${DECIMAL_PRECISION},${DECIMAL_SCALE})`,
-    );
-  }
-};
+export { assertDecimalFitsSchema } from './decimal.utils';
 
 export const parsePositiveDecimalInput = (
   value: string,
