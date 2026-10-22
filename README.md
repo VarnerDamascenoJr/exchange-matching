@@ -183,6 +183,7 @@ npm run build
 
 ## Notes
 
+- Financial scale, rounding, minimum cost and partial-fill reservations are documented in [the decimal policy](docs/decimal-policy.md), with shared reference cases for backend and frontend tests.
 - List endpoints support pagination with `page` and `pageSize`
 - The frontend offers page size options `10`, `25`, `50` and `100`
 - Clicking a bid prefills the sell form
