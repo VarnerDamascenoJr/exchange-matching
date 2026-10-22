@@ -10,7 +10,6 @@ import { useTradeHistory } from '../../trades/hooks/useTradeHistory';
 import { useExchangeRealtime } from '../../../hooks/useExchangeRealtime';
 import { usePaginatedTableState } from '../../../hooks/usePaginatedTableState';
 import { OrderBookLevel } from '../../../types/market';
-import { toDisplayDecimal } from '../../../utils/format';
 
 type PrefillValues = {
   amount: string;
@@ -79,15 +78,15 @@ export function useExchangePageData({
 
   const handleBidSelect = (level: OrderBookLevel) => {
     setSellPrefill({
-      amount: toDisplayDecimal(level.amount),
-      price: toDisplayDecimal(level.price),
+      amount: level.amount,
+      price: level.price,
     });
   };
 
   const handleAskSelect = (level: OrderBookLevel) => {
     setBuyPrefill({
-      amount: toDisplayDecimal(level.amount),
-      price: toDisplayDecimal(level.price),
+      amount: level.amount,
+      price: level.price,
     });
   };
 
