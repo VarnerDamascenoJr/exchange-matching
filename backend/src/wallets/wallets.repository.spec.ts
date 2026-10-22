@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletsRepository } from './wallets.repository';
 
@@ -72,7 +73,13 @@ describe('WalletsRepository', () => {
         repository.reserveFunds(transactionClient, 'user-1', asset, amount),
       ).resolves.toEqual({ count: 1 });
       expect(transaction.wallet.updateMany).toHaveBeenCalledWith({
-        where: { userId: 'user-1', [available]: { gte: amount } },
+        where: {
+          userId: 'user-1',
+          [available]: { gte: amount },
+          [reserved]: {
+            lte: new Prisma.Decimal('99999999999999999999.87654321'),
+          },
+        },
         data: {
           [available]: { decrement: amount },
           [reserved]: { increment: amount },
@@ -112,7 +119,13 @@ describe('WalletsRepository', () => {
         repository.releaseFunds(transactionClient, 'user-1', asset, amount),
       ).resolves.toBe(wallet);
       expect(transaction.wallet.update).toHaveBeenCalledWith({
-        where: { userId: 'user-1' },
+        where: {
+          userId: 'user-1',
+          [available]: {
+            lte: new Prisma.Decimal('99999999999999999999.87654321'),
+          },
+          [reserved]: { gte: amount },
+        },
         data: {
           [available]: { increment: amount },
           [reserved]: { decrement: amount },
@@ -132,9 +145,40 @@ describe('WalletsRepository', () => {
       repository.updateBalances(transactionClient, 'user-1', data),
     ).resolves.toBe(wallet);
     expect(transaction.wallet.update).toHaveBeenCalledWith({
-      where: { userId: 'user-1' },
+      where: {
+        userId: 'user-1',
+        reservedUsd: { gte: new Prisma.Decimal('10000.12345678') },
+        availableBtc: {
+          lte: new Prisma.Decimal('99999999999999999999.99999998'),
+        },
+      },
       data,
     });
+  });
+
+  it('rejects a calculated balance delta outside DECIMAL(28,8) before writing', async () => {
+    await expect(
+      repository.updateBalances(transactionClient, 'user-1', {
+        availableUsd: {
+          increment: new Prisma.Decimal('100000000000000000000'),
+        },
+      }),
+    ).rejects.toThrow(BadRequestException);
+    expect(transaction.wallet.update).not.toHaveBeenCalled();
+  });
+
+  it('returns a validation error when the live balance would overflow or become negative', async () => {
+    transaction.wallet.update.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError(
+        'No row satisfies balance bounds',
+        { code: 'P2025', clientVersion: 'test' },
+      ),
+    );
+    await expect(
+      repository.updateBalances(transactionClient, 'user-1', {
+        availableUsd: { increment: new Prisma.Decimal('0.00000001') },
+      }),
+    ).rejects.toThrow(BadRequestException);
   });
 
   it('should lock unique wallets in a stable owner order before loading them', async () => {
