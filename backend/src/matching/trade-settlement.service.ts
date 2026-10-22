@@ -6,7 +6,11 @@ import {
   TradeFeeAsset,
   Wallet,
 } from '@prisma/client';
-import { multiplyScaled, subtractScaled } from '../common/decimal.utils';
+import {
+  assertPositiveOrderCost,
+  multiplyScaled,
+  subtractScaled,
+} from '../common/decimal.utils';
 import { WalletsRepository } from '../wallets/wallets.repository';
 
 export type TradeFeeDetails = {
@@ -45,6 +49,7 @@ export class TradeSettlementService {
     tradeAmount: Prisma.Decimal,
     tradePrice: Prisma.Decimal,
   ): Promise<void> {
+    assertPositiveOrderCost(tradeAmount, tradePrice);
     if (taker.side === OrderSide.BUY) {
       await this.applyBuyTakerBalances(
         transactionClient,
@@ -118,7 +123,7 @@ export class TradeSettlementService {
     tradeAmount: Prisma.Decimal,
     tradePrice: Prisma.Decimal,
   ): Promise<void> {
-    const reservedCost = multiplyScaled(tradeAmount, taker.price);
+    const reservedCost = this.buyReservationDebit(taker, tradeAmount);
     const executedCost = multiplyScaled(tradeAmount, tradePrice);
     const priceImprovement = subtractScaled(reservedCost, executedCost);
     const takerFeeAmount = multiplyScaled(
@@ -186,6 +191,8 @@ export class TradeSettlementService {
     );
     const receivedUsd = subtractScaled(executedCost, takerFeeAmount);
     const receivedBtc = subtractScaled(tradeAmount, makerFeeAmount);
+    const reservedCost = this.buyReservationDebit(maker, tradeAmount);
+    const roundingRefund = subtractScaled(reservedCost, executedCost);
 
     await this.walletsRepository.updateBalances(
       transactionClient,
@@ -205,8 +212,11 @@ export class TradeSettlementService {
       makerWallet.userId,
       {
         reservedUsd: {
-          decrement: executedCost,
+          decrement: reservedCost,
         },
+        ...(roundingRefund.gt(0)
+          ? { availableUsd: { increment: roundingRefund } }
+          : {}),
         availableBtc: {
           increment: receivedBtc,
         },
@@ -215,6 +225,16 @@ export class TradeSettlementService {
 
     this.logger.log(
       `Matched SELL taker ${taker.id} with BUY maker ${maker.id} for ${tradeAmount.toFixed(8)} BTC at ${tradePrice.toFixed(8)}`,
+    );
+  }
+
+  private buyReservationDebit(order: Order, tradeAmount: Prisma.Decimal) {
+    // floor(a*p) - floor((a-q)*p) keeps the reservation equal to the remaining
+    // order's rounded cost. Return any quantization surplus to available USD.
+    const remaining = subtractScaled(order.remainingAmount, tradeAmount);
+    return subtractScaled(
+      multiplyScaled(order.remainingAmount, order.price),
+      multiplyScaled(remaining, order.price),
     );
   }
 }
