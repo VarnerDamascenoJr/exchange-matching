@@ -7,6 +7,7 @@ import {
 import { OrderSide, OrderStatus } from '@prisma/client';
 import { buildPaginatedResponse } from '../common/pagination';
 import { parsePositiveDecimalInput } from '../common/decimal-input';
+import { assertPositiveOrderCost } from '../common/decimal.utils';
 import { PaginationQueryDto } from '../common/dto/pagination-query.dto';
 import { OrderMatchingOutboxDispatcherService } from '../queue/order-matching-outbox-dispatcher.service';
 import { OrderMatchingOutboxService } from '../queue/order-matching-outbox.service';
@@ -43,6 +44,7 @@ export class OrdersService {
   ): Promise<OrderSummary> {
     const amount = parsePositiveDecimalInput(amountInput, 'amount');
     const price = parsePositiveDecimalInput(priceInput, 'price');
+    assertPositiveOrderCost(amount, price);
 
     const order = await this.ordersRepository.runInTransaction(
       async (transactionClient) => {
