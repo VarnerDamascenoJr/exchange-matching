@@ -1,12 +1,44 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma, Wallet } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  assertDecimalFitsSchema,
+  DECIMAL_MAX,
+  subtractScaled,
+} from '../common/decimal.utils';
 
 type WalletAsset = 'BTC' | 'USD';
-type BalanceUpdate = Pick<
-  Prisma.WalletUpdateInput,
-  'availableBtc' | 'reservedBtc' | 'availableUsd' | 'reservedUsd'
+type BalanceField =
+  'availableBtc' | 'reservedBtc' | 'availableUsd' | 'reservedUsd';
+type BalanceUpdate = Partial<
+  Record<
+    BalanceField,
+    {
+      increment?: Prisma.Decimal;
+      decrement?: Prisma.Decimal;
+    }
+  >
 >;
+
+// Check the live balance in the write predicate, including concurrent updates.
+const balanceConstraints = (
+  data: BalanceUpdate,
+): Pick<Prisma.WalletWhereInput, BalanceField> => {
+  const where: Pick<Prisma.WalletWhereInput, BalanceField> = {};
+  for (const field of Object.keys(data) as BalanceField[]) {
+    const { increment, decrement } = data[field]!;
+    const delta = increment ?? decrement!;
+    assertDecimalFitsSchema(delta, field);
+    if (delta.lt(0)) {
+      throw new BadRequestException('Balance changes must be nonnegative');
+    }
+    where[field] =
+      increment !== undefined
+        ? { lte: subtractScaled(DECIMAL_MAX, increment) }
+        : { gte: decrement };
+  }
+  return where;
+};
 
 @Injectable()
 export class WalletsRepository {
@@ -25,21 +57,20 @@ export class WalletsRepository {
     asset: WalletAsset,
     amount: Prisma.Decimal,
   ) {
-    return asset === 'USD'
-      ? transactionClient.wallet.updateMany({
-          where: { userId, availableUsd: { gte: amount } },
-          data: {
+    const data: BalanceUpdate =
+      asset === 'USD'
+        ? {
             availableUsd: { decrement: amount },
             reservedUsd: { increment: amount },
-          },
-        })
-      : transactionClient.wallet.updateMany({
-          where: { userId, availableBtc: { gte: amount } },
-          data: {
+          }
+        : {
             availableBtc: { decrement: amount },
             reservedBtc: { increment: amount },
-          },
-        });
+          };
+    return transactionClient.wallet.updateMany({
+      where: { userId, ...balanceConstraints(data) },
+      data,
+    });
   }
 
   releaseFunds(
@@ -63,12 +94,28 @@ export class WalletsRepository {
     );
   }
 
-  updateBalances(
+  async updateBalances(
     transactionClient: Prisma.TransactionClient,
     userId: string,
     data: BalanceUpdate,
   ) {
-    return transactionClient.wallet.update({ where: { userId }, data });
+    const constraints = balanceConstraints(data);
+    try {
+      return await transactionClient.wallet.update({
+        where: { userId, ...constraints },
+        data,
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2025'
+      ) {
+        throw new BadRequestException(
+          'Balance update would exceed its numeric bounds',
+        );
+      }
+      throw error;
+    }
   }
 
   async lockAndLoadByUserIds(

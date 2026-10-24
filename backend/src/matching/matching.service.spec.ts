@@ -220,9 +220,9 @@ describe('MatchingService', () => {
     expect(transactionClient.wallet.update.mock.calls).toEqual([
       [
         {
-          where: {
+          where: expect.objectContaining({
             userId: 'buyer',
-          },
+          }),
           data: {
             reservedUsd: {
               decrement: new Prisma.Decimal('10000'),
@@ -238,9 +238,9 @@ describe('MatchingService', () => {
       ],
       [
         {
-          where: {
+          where: expect.objectContaining({
             userId: 'seller',
-          },
+          }),
           data: {
             reservedBtc: {
               decrement: new Prisma.Decimal('1'),
@@ -572,9 +572,9 @@ describe('MatchingService', () => {
     expect(transactionClient.wallet.update.mock.calls).toEqual([
       [
         {
-          where: {
+          where: expect.objectContaining({
             userId: 'seller',
-          },
+          }),
           data: {
             reservedBtc: {
               decrement: new Prisma.Decimal('1'),
@@ -587,9 +587,9 @@ describe('MatchingService', () => {
       ],
       [
         {
-          where: {
+          where: expect.objectContaining({
             userId: 'buyer',
-          },
+          }),
           data: {
             reservedUsd: {
               decrement: new Prisma.Decimal('10000'),
@@ -698,9 +698,9 @@ describe('MatchingService', () => {
     expect(transactionClient.wallet.update.mock.calls).toEqual([
       [
         {
-          where: {
+          where: expect.objectContaining({
             userId: 'seller',
-          },
+          }),
           data: {
             reservedBtc: {
               decrement: new Prisma.Decimal('0.1'),
@@ -713,9 +713,9 @@ describe('MatchingService', () => {
       ],
       [
         {
-          where: {
+          where: expect.objectContaining({
             userId: 'buyer',
-          },
+          }),
           data: {
             reservedUsd: {
               decrement: new Prisma.Decimal('0.03333333'),
@@ -823,7 +823,7 @@ describe('MatchingService', () => {
       data: { status: OrderStatus.REJECTED },
     });
     expect(transactionClient.wallet.update).toHaveBeenCalledWith({
-      where: { userId: 'buyer' },
+      where: expect.objectContaining({ userId: 'buyer' }),
       data: {
         availableUsd: { increment: new Prisma.Decimal('5000') },
         reservedUsd: { decrement: new Prisma.Decimal('5000') },

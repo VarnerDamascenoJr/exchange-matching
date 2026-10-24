@@ -7,6 +7,11 @@ import { OrdersRepository } from '../orders/orders.repository';
 import { MatchingOrderBookService } from './matching-order-book.service';
 import { TradeSettlementService } from './trade-settlement.service';
 import { WalletsService } from '../wallets/wallets.service';
+import {
+  addScaled,
+  multiplyScaled,
+  subtractScaled,
+} from '../common/decimal.utils';
 
 @Injectable()
 export class MatchingService {
@@ -99,6 +104,11 @@ export class MatchingService {
             : makerRemaining;
           const tradePrice = new Prisma.Decimal(maker.price);
 
+          // Leave fragments worth less than one USD unit on the book.
+          if (multiplyScaled(tradeAmount, tradePrice).eq(0)) {
+            continue;
+          }
+
           const lockedWallets =
             await this.tradeSettlementService.lockAndLoadWallets(
               transactionClient,
@@ -115,7 +125,7 @@ export class MatchingService {
 
           await this.tradeSettlementService.applyTradeBalances(
             transactionClient,
-            taker,
+            { ...taker, remainingAmount: takerRemaining },
             maker,
             takerWallet,
             makerWallet,
@@ -129,7 +139,10 @@ export class MatchingService {
             tradePrice,
           );
 
-          const nextMakerRemaining = makerRemaining.sub(tradeAmount);
+          const nextMakerRemaining = subtractScaled(
+            makerRemaining,
+            tradeAmount,
+          );
           const buyOrderId = taker.side === OrderSide.BUY ? taker.id : maker.id;
           const sellOrderId =
             taker.side === OrderSide.SELL ? taker.id : maker.id;
@@ -166,8 +179,8 @@ export class MatchingService {
             },
           });
 
-          takerRemaining = takerRemaining.sub(tradeAmount);
-          matchedAmount = matchedAmount.add(tradeAmount);
+          takerRemaining = subtractScaled(takerRemaining, tradeAmount);
+          matchedAmount = addScaled(matchedAmount, tradeAmount);
         }
 
         const takerStatus = matchedAmount.eq(0)
@@ -189,14 +202,16 @@ export class MatchingService {
         await this.realtimeOutboxService.appendEvents(transactionClient, [
           {
             type: 'market.changed',
-            reason: 'trade-executed',
+            reason: matchedAmount.eq(0) ? 'order-opened' : 'trade-executed',
             occurredAt,
             orderId: taker.id,
             tradeIds,
           },
           ...[...affectedUserIds].map((userId) => ({
             type: 'account.changed' as const,
-            reason: 'trade-executed' as const,
+            reason: matchedAmount.eq(0)
+              ? ('order-opened' as const)
+              : ('trade-executed' as const),
             occurredAt,
             orderId: taker.id,
             tradeIds,

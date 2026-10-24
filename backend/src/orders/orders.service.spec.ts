@@ -156,12 +156,12 @@ describe('OrdersService', () => {
     );
 
     expect(transactionClient.wallet.updateMany).toHaveBeenCalledWith({
-      where: {
+      where: expect.objectContaining({
         userId: 'user-1',
         availableUsd: {
           gte: new Prisma.Decimal('5000'),
         },
-      },
+      }),
       data: {
         availableUsd: {
           decrement: new Prisma.Decimal('5000'),
@@ -216,12 +216,12 @@ describe('OrdersService', () => {
     );
 
     expect(transactionClient.wallet.updateMany).toHaveBeenCalledWith({
-      where: {
+      where: expect.objectContaining({
         userId: 'user-1',
         availableBtc: {
           gte: new Prisma.Decimal('0.75'),
         },
-      },
+      }),
       data: {
         availableBtc: {
           decrement: new Prisma.Decimal('0.75'),
@@ -257,12 +257,12 @@ describe('OrdersService', () => {
     );
 
     expect(transactionClient.wallet.updateMany).toHaveBeenCalledWith({
-      where: {
+      where: expect.objectContaining({
         userId: 'user-1',
         availableUsd: {
           gte: new Prisma.Decimal('0.03333333'),
         },
-      },
+      }),
       data: {
         availableUsd: {
           decrement: new Prisma.Decimal('0.03333333'),
@@ -299,6 +299,27 @@ describe('OrdersService', () => {
       new BadRequestException('amount must be a valid decimal'),
     );
   });
+
+  it.each([
+    ['0.5', '0.00000001'],
+    ['0.00000001', '0.00000001'],
+    ['100000000000000000000', '1'],
+    ['1', '100000000000000000000'],
+    ['99999999999999999999.99999999', '2'],
+  ])(
+    'rejects %s × %s for both sides before opening a transaction',
+    async (amount, price) => {
+      for (const side of [OrderSide.BUY, OrderSide.SELL]) {
+        await expect(
+          ordersService.createOrder('user-1', side, amount, price),
+        ).rejects.toThrow(BadRequestException);
+      }
+      expect(prismaService.$transaction).not.toHaveBeenCalled();
+      expect(transactionClient.order.create).not.toHaveBeenCalled();
+      expect(transactionClient.wallet.updateMany).not.toHaveBeenCalled();
+      expect(orderMatchingOutboxService.appendOrder).not.toHaveBeenCalled();
+    },
+  );
 
   it('should reject amount values with more than 8 decimal places', async () => {
     await expect(
@@ -435,9 +456,9 @@ describe('OrdersService', () => {
       },
     });
     expect(transactionClient.wallet.update).toHaveBeenCalledWith({
-      where: {
+      where: expect.objectContaining({
         userId: 'user-1',
-      },
+      }),
       data: {
         availableUsd: {
           increment: new Prisma.Decimal('5000'),
@@ -493,9 +514,9 @@ describe('OrdersService', () => {
     await ordersService.cancelOrder('user-1', 'order-1');
 
     expect(transactionClient.wallet.update).toHaveBeenCalledWith({
-      where: {
+      where: expect.objectContaining({
         userId: 'user-1',
-      },
+      }),
       data: {
         availableBtc: {
           increment: new Prisma.Decimal('0.75'),
@@ -573,7 +594,7 @@ describe('OrdersService', () => {
       updatedAt: updatedAt.toISOString(),
     });
     expect(transactionClient.wallet.update).toHaveBeenCalledWith({
-      where: { userId: 'user-1' },
+      where: expect.objectContaining({ userId: 'user-1' }),
       data: {
         availableUsd: { increment: new Prisma.Decimal('2500') },
         reservedUsd: { decrement: new Prisma.Decimal('2500') },

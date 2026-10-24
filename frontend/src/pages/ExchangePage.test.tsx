@@ -114,6 +114,18 @@ function renderExchange(values: Pick<OrderBookLevel, 'amount' | 'price'>[] = [
 }
 
 describe('exchange financial precision', () => {
+  it('shows the rounded-down total and rejects a zero-cost book selection before sending', async () => {
+    const { submittedOrders } = renderExchange([{ amount: '0.5', price: '0.00000001' }]);
+    const table = within(await screen.findByRole('table', { name: 'Ask book levels' }));
+    fireEvent.click(await table.findByText('US$ 0.00000001'));
+    const button = screen.getByRole('button', { name: 'Submit buy order' });
+    const form = within(button.closest('form')!);
+    expect(form.getByText('US$ 0.00')).toBeVisible();
+    fireEvent.click(button);
+    expect(await form.findByText('Order cost must be at least 0.00000001 USD')).toBeVisible();
+    expect(submittedOrders).toEqual([]);
+  }, 30_000);
+
   it('displays exact balances, stats, book levels, orders, matches and fees', async () => {
     renderExchange();
 
@@ -157,7 +169,8 @@ describe('exchange financial precision', () => {
       ];
       // Rotate amounts to exercise independent quantity and price values.
       const levels = cases.map(([price, display], index) => ({
-        price, display, amount: cases[(index + 1) % cases.length][0],
+        price, display, amount: price === '0.00000001' ? '1.23456789'
+          : price === largeValue ? '0.00000001' : cases[(index + 1) % cases.length][0],
       }));
       const { submittedOrders } = renderExchange(levels);
       const bookName = bookSide === 'BUY' ? 'Bid book levels' : 'Ask book levels';
