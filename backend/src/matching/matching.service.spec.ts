@@ -60,6 +60,7 @@ describe('MatchingService', () => {
   let tradeSettlementService: TradeSettlementService;
   let walletsService: WalletsService;
   let transactionClient: {
+    $executeRaw: jest.Mock;
     $queryRaw: jest.Mock;
     order: {
       findUnique: jest.Mock;
@@ -78,6 +79,7 @@ describe('MatchingService', () => {
 
   beforeEach(() => {
     transactionClient = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
       $queryRaw: jest.fn(),
       order: {
         findUnique: jest.fn(),
@@ -129,6 +131,50 @@ describe('MatchingService', () => {
       walletsService,
     );
   });
+
+  it.each(['processOrder', 'rejectOrderAfterFailedProcessing'] as const)(
+    'waits for the market lock before accessing orders in %s',
+    async (method) => {
+      let releaseLock!: () => void;
+      transactionClient.$executeRaw.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseLock = resolve;
+        }),
+      );
+      transactionClient.order.findUnique.mockResolvedValueOnce(
+        buildOrder({ status: OrderStatus.OPEN }),
+      );
+
+      const operation = matchingService[method]('order-1');
+      expect(transactionClient.$executeRaw).toHaveBeenCalledTimes(1);
+      expect(transactionClient.$queryRaw).not.toHaveBeenCalled();
+      expect(transactionClient.order.findUnique).not.toHaveBeenCalled();
+
+      releaseLock();
+      await operation;
+
+      expect(transactionClient.$queryRaw).toHaveBeenCalled();
+      expect(transactionClient.order.findUnique).toHaveBeenCalled();
+    },
+  );
+
+  it.each(['processOrder', 'rejectOrderAfterFailedProcessing'] as const)(
+    'propagates a market lock failure without accessing orders in %s',
+    async (method) => {
+      const failure = new Error('Market lock unavailable');
+      transactionClient.$executeRaw.mockRejectedValueOnce(failure);
+
+      await expect(matchingService[method]('order-1')).rejects.toBe(failure);
+
+      expect(transactionClient.$queryRaw).not.toHaveBeenCalled();
+      expect(transactionClient.order.findUnique).not.toHaveBeenCalled();
+      expect(transactionClient.order.update).not.toHaveBeenCalled();
+      expect(transactionClient.wallet.update).not.toHaveBeenCalled();
+      expect(
+        realtimeOutboxDispatcherService.dispatchPending,
+      ).not.toHaveBeenCalled();
+    },
+  );
 
   it('should move a queued order to OPEN when there is no compatible maker', async () => {
     transactionClient.order.findUnique.mockResolvedValueOnce(buildOrder());
