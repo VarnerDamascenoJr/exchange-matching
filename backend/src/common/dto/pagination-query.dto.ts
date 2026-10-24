@@ -1,5 +1,15 @@
 import { Transform } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+  Validate,
+  ValidatorConstraint,
+  ValidatorConstraintInterface,
+  ValidationArguments,
+} from 'class-validator';
 
 const toPositiveInteger = (value: unknown, fallback: number) => {
   if (value === undefined || value === null || value === '') {
@@ -9,12 +19,29 @@ const toPositiveInteger = (value: unknown, fallback: number) => {
   const parsedValue =
     typeof value === 'number'
       ? value
-      : typeof value === 'string'
-        ? Number.parseInt(value, 10)
-        : value;
+      : typeof value === 'string' && /^\d+$/.test(value)
+        ? Number(value)
+        : Number.NaN;
 
-  return Number.isNaN(parsedValue) ? value : parsedValue;
+  return Number.isSafeInteger(parsedValue) ? parsedValue : Number.NaN;
 };
+
+@ValidatorConstraint({ name: 'safePaginationOffset', async: false })
+class SafePaginationOffset implements ValidatorConstraintInterface {
+  validate(_value: unknown, { object }: ValidationArguments): boolean {
+    const { page, pageSize } = object as PaginationQueryDto;
+    // Let the field validators report invalid inputs independently.
+    return (
+      !Number.isSafeInteger(page) ||
+      !Number.isSafeInteger(pageSize) ||
+      Number.isSafeInteger((page - 1) * pageSize)
+    );
+  }
+
+  defaultMessage(): string {
+    return 'Pagination offset must be a safe integer';
+  }
+}
 
 const toOptionalString = (value: unknown) => {
   if (typeof value !== 'string') {
@@ -35,6 +62,7 @@ export class PaginationQueryDto {
   @IsInt()
   @Min(1)
   @Max(100)
+  @Validate(SafePaginationOffset)
   pageSize: number = 25;
 
   @Transform(({ value }: { value: unknown }) => toOptionalString(value))

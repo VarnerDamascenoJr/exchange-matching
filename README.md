@@ -184,7 +184,7 @@ npm run build
 ## Notes
 
 - Financial scale, rounding, minimum cost and partial-fill reservations are documented in [the decimal policy](docs/decimal-policy.md), with shared reference cases for backend and frontend tests.
-- List endpoints support pagination with `page` and `pageSize`
+- List endpoints accept decimal integer query strings for `page` (at least 1) and `pageSize` (1–100). Both inputs and the calculated offset must be safe JavaScript integers. Missing or empty parameters default to page 1 and page size 25; fractions, suffixes, non-finite values, exponent notation and repeated parameters return HTTP 400.
 - The frontend offers page size options `10`, `25`, `50` and `100`
 - Clicking a bid prefills the sell form
 - Clicking an ask prefills the buy form
