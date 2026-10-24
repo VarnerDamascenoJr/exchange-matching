@@ -2,6 +2,7 @@ import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JobsOptions, Queue } from 'bullmq';
 import {
+  ORDER_MATCHING_GLOBAL_CONCURRENCY,
   ORDER_MATCHING_QUEUE_NAME,
   PROCESS_ORDER_JOB_NAME,
 } from './order-matching.constants';
@@ -14,6 +15,12 @@ export class OrderMatchingQueueService implements OnApplicationShutdown {
   private queue?: Queue<ProcessOrderJobData>;
 
   constructor(private readonly configService: ConfigService) {}
+
+  async configureGlobalConcurrency(): Promise<void> {
+    await this.getQueue().setGlobalConcurrency(
+      ORDER_MATCHING_GLOBAL_CONCURRENCY,
+    );
+  }
 
   async enqueueProcessOrder(orderId: string): Promise<void> {
     const jobOptions: JobsOptions = {
