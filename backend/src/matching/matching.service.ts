@@ -30,6 +30,8 @@ export class MatchingService {
   async processOrder(orderId: string): Promise<void> {
     const eventsWereStored = await this.prismaService.$transaction<boolean>(
       async (transactionClient) => {
+        await this.lockMarket(transactionClient);
+
         const taker = await this.ordersRepository.lockAndLoadOrder(
           transactionClient,
           orderId,
@@ -235,6 +237,8 @@ export class MatchingService {
   async rejectOrderAfterFailedProcessing(orderId: string): Promise<void> {
     const eventWasStored = await this.prismaService.$transaction<boolean>(
       async (transactionClient) => {
+        await this.lockMarket(transactionClient);
+
         const order = await this.ordersRepository.lockAndLoadOrder(
           transactionClient,
           orderId,
@@ -267,6 +271,17 @@ export class MatchingService {
     if (eventWasStored) {
       await this.dispatchRealtimeOutbox();
     }
+  }
+
+  private async lockMarket(
+    transactionClient: Prisma.TransactionClient,
+  ): Promise<void> {
+    // Every matching path takes the same market lock before order/wallet locks.
+    await transactionClient.$executeRaw`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended('exchange-matching:BTC/USD', 0)
+      )
+    `;
   }
 
   private async dispatchRealtimeOutbox(): Promise<void> {
