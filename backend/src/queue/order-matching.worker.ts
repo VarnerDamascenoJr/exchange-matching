@@ -11,6 +11,7 @@ import {
   ORDER_MATCHING_QUEUE_NAME,
 } from './order-matching.constants';
 import { OrderMatchingProcessor } from './order-matching.processor';
+import { OrderMatchingQueueService } from './order-matching.queue';
 import { ProcessOrderJobData } from './order-matching.types';
 import { createRedisConnection } from './redis-connection.factory';
 
@@ -24,9 +25,13 @@ export class OrderMatchingWorker
   constructor(
     private readonly configService: ConfigService,
     private readonly orderMatchingProcessor: OrderMatchingProcessor,
+    private readonly orderMatchingQueueService: OrderMatchingQueueService,
   ) {}
 
-  onModuleInit() {
+  async onModuleInit(): Promise<void> {
+    // Configure the shared limit before this worker can consume any jobs.
+    await this.orderMatchingQueueService.configureGlobalConcurrency();
+
     this.worker = new Worker<ProcessOrderJobData>(
       ORDER_MATCHING_QUEUE_NAME,
       async (job) => this.orderMatchingProcessor.process(job),
