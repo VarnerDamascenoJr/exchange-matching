@@ -13,6 +13,7 @@ BTC/USD limit order exchange built with a separate API process and matching work
 
 - `backend/src/main.ts`: HTTP API and Socket.io server
 - `backend/src/worker.ts`: sequential order matching worker
+- Matching workers set BullMQ global concurrency to `1` before consuming jobs, so multiple worker instances share the same processing limit.
 - PostgreSQL is the source of truth for users, wallets, orders and trades
 - Redis is used for BullMQ jobs and realtime exchange events
 
