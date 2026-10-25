@@ -42,17 +42,19 @@ export class MatchingOrderBookService {
     const makers: Order[] = [];
 
     for (const candidate of candidateIds) {
+      // Wait for earlier makers so a concurrent cancellation cannot bypass priority.
       const lockedRows = await transactionClient.$queryRaw<{ id: string }[]>`
         SELECT "id"
         FROM "orders"
         WHERE "id" = ${candidate.id}
-        FOR UPDATE SKIP LOCKED
+        FOR UPDATE
       `;
 
       if (lockedRows.length === 0) {
         continue;
       }
 
+      // Reload after the wait: cancellation may have committed or rolled back.
       const maker = await transactionClient.order.findUnique({
         where: {
           id: candidate.id,
