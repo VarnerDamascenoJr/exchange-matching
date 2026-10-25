@@ -64,7 +64,7 @@ describe('MatchingService', () => {
     $queryRaw: jest.Mock;
     order: {
       findUnique: jest.Mock;
-      findMany: jest.Mock;
+      findFirst: jest.Mock;
       update: jest.Mock;
     };
     wallet: {
@@ -83,7 +83,7 @@ describe('MatchingService', () => {
       $queryRaw: jest.fn(),
       order: {
         findUnique: jest.fn(),
-        findMany: jest.fn(),
+        findFirst: jest.fn().mockResolvedValue(null),
         update: jest.fn(),
       },
       wallet: {
@@ -178,7 +178,7 @@ describe('MatchingService', () => {
 
   it('should move a queued order to OPEN when there is no compatible maker', async () => {
     transactionClient.order.findUnique.mockResolvedValueOnce(buildOrder());
-    transactionClient.order.findMany.mockResolvedValueOnce([]);
+    transactionClient.order.findFirst.mockResolvedValueOnce(null);
 
     await expect(
       matchingService.processOrder('order-1'),
@@ -240,7 +240,7 @@ describe('MatchingService', () => {
     transactionClient.order.findUnique
       .mockResolvedValueOnce(taker)
       .mockResolvedValueOnce(maker);
-    transactionClient.order.findMany.mockResolvedValueOnce([{ id: maker.id }]);
+    transactionClient.order.findFirst.mockResolvedValueOnce(maker);
     transactionClient.$queryRaw
       .mockResolvedValueOnce([{ id: taker.id }])
       .mockResolvedValueOnce([{ id: maker.id }])
@@ -407,10 +407,9 @@ describe('MatchingService', () => {
       .mockResolvedValueOnce(taker)
       .mockResolvedValueOnce(makerOne)
       .mockResolvedValueOnce(makerTwo);
-    transactionClient.order.findMany.mockResolvedValueOnce([
-      { id: makerOne.id },
-      { id: makerTwo.id },
-    ]);
+    transactionClient.order.findFirst
+      .mockResolvedValueOnce(makerOne)
+      .mockResolvedValueOnce(makerTwo);
     transactionClient.$queryRaw
       .mockResolvedValueOnce([{ id: taker.id }])
       .mockResolvedValueOnce([{ id: makerOne.id }])
@@ -592,7 +591,7 @@ describe('MatchingService', () => {
     transactionClient.order.findUnique
       .mockResolvedValueOnce(taker)
       .mockResolvedValueOnce(maker);
-    transactionClient.order.findMany.mockResolvedValueOnce([{ id: maker.id }]);
+    transactionClient.order.findFirst.mockResolvedValueOnce(maker);
     transactionClient.$queryRaw
       .mockResolvedValueOnce([{ id: taker.id }])
       .mockResolvedValueOnce([{ id: maker.id }])
@@ -718,7 +717,7 @@ describe('MatchingService', () => {
     transactionClient.order.findUnique
       .mockResolvedValueOnce(taker)
       .mockResolvedValueOnce(maker);
-    transactionClient.order.findMany.mockResolvedValueOnce([{ id: maker.id }]);
+    transactionClient.order.findFirst.mockResolvedValueOnce(maker);
     transactionClient.$queryRaw
       .mockResolvedValueOnce([{ id: taker.id }])
       .mockResolvedValueOnce([{ id: maker.id }])
@@ -820,12 +819,12 @@ describe('MatchingService', () => {
     });
 
     transactionClient.order.findUnique.mockResolvedValueOnce(taker);
-    transactionClient.order.findMany.mockResolvedValueOnce([]);
+    transactionClient.order.findFirst.mockResolvedValueOnce(null);
     transactionClient.$queryRaw.mockResolvedValueOnce([{ id: taker.id }]);
 
     await matchingService.processOrder(taker.id);
 
-    expect(transactionClient.order.findMany).toHaveBeenCalledWith(
+    expect(transactionClient.order.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           userId: { not: 'trader' },
