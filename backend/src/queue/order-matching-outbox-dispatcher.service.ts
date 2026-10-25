@@ -41,9 +41,9 @@ export class OrderMatchingOutboxDispatcherService
       return;
     }
 
-    void this.dispatchPending();
+    this.dispatchInBackground();
     this.pollTimer = setInterval(() => {
-      void this.dispatchPending();
+      this.dispatchInBackground();
     }, ORDER_MATCHING_OUTBOX_POLL_INTERVAL_MS);
   }
 
@@ -52,7 +52,8 @@ export class OrderMatchingOutboxDispatcherService
       clearInterval(this.pollTimer);
     }
 
-    await this.dispatchPromise;
+    // Background dispatch reports its own failure; shutdown still drains it.
+    await this.dispatchPromise?.catch(() => undefined);
   }
 
   async dispatchPending(): Promise<void> {
@@ -65,6 +66,21 @@ export class OrderMatchingOutboxDispatcherService
     });
 
     return this.dispatchPromise;
+  }
+
+  private dispatchInBackground(): void {
+    if (this.dispatchPromise) {
+      return;
+    }
+
+    void this.dispatchPending().catch((error: unknown) => {
+      const message =
+        error instanceof Error ? error.message : 'Unknown dispatch error';
+      this.logger.error(
+        `Order matching outbox dispatch failed: ${message}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    });
   }
 
   private async dispatchLoop(): Promise<void> {

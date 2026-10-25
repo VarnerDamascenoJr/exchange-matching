@@ -38,10 +38,10 @@ export class RealtimeOutboxDispatcherService
       return;
     }
 
-    void this.dispatchPending();
+    this.dispatchInBackground();
     void this.runMaintenanceIfDue();
     this.pollTimer = setInterval(() => {
-      void this.dispatchPending();
+      this.dispatchInBackground();
       void this.runMaintenanceIfDue();
     }, REALTIME_OUTBOX_POLL_INTERVAL_MS);
   }
@@ -51,7 +51,8 @@ export class RealtimeOutboxDispatcherService
       clearInterval(this.pollTimer);
     }
 
-    await this.dispatchPromise;
+    // Background dispatch reports its own failure; shutdown still drains it.
+    await this.dispatchPromise?.catch(() => undefined);
   }
 
   async dispatchPending(): Promise<void> {
@@ -64,6 +65,21 @@ export class RealtimeOutboxDispatcherService
     });
 
     return this.dispatchPromise;
+  }
+
+  private dispatchInBackground(): void {
+    if (this.dispatchPromise) {
+      return;
+    }
+
+    void this.dispatchPending().catch((error: unknown) => {
+      const message =
+        error instanceof Error ? error.message : 'Unknown dispatch error';
+      this.logger.error(
+        `Realtime outbox dispatch failed: ${message}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    });
   }
 
   private async dispatchLoop(): Promise<void> {

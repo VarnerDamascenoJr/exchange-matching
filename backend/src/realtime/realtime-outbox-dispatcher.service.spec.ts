@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RealtimeOutboxRepository } from './realtime-outbox.repository';
 import { RealtimePublisherService } from './realtime.publisher';
@@ -47,6 +48,16 @@ describe('RealtimeOutboxDispatcherService', () => {
     jest.useRealTimers();
     jest.restoreAllMocks();
   });
+
+  function enablePolling() {
+    jest.useFakeTimers();
+    config.get.mockImplementation((key: string) =>
+      key === 'NODE_ENV' ? 'development' : false,
+    );
+    return jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+  }
 
   it('should claim bounded batches with the configured lease timeout', async () => {
     await dispatcher.dispatchPending();
@@ -166,5 +177,118 @@ describe('RealtimeOutboxDispatcherService', () => {
     await dispatcher.onApplicationShutdown();
     await jest.advanceTimersByTimeAsync(REALTIME_OUTBOX_POLL_INTERVAL_MS);
     expect(repository.claimNextBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['startup', 'poll'] as const)(
+    'logs a %s claim failure and publishes again on the next poll',
+    async (phase) => {
+      const loggedError = enablePolling();
+      const failure = new Error('Database unavailable');
+      if (phase === 'poll') {
+        repository.claimNextBatch.mockResolvedValueOnce([]);
+      }
+      repository.claimNextBatch
+        .mockRejectedValueOnce(failure)
+        .mockResolvedValueOnce([
+          { id: 'event-1', claim_token: 'claim-1', payload: event },
+        ]);
+
+      dispatcher.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      if (phase === 'poll') {
+        await jest.advanceTimersByTimeAsync(REALTIME_OUTBOX_POLL_INTERVAL_MS);
+      }
+
+      expect(loggedError).toHaveBeenCalledTimes(1);
+      expect(loggedError).toHaveBeenCalledWith(
+        'Realtime outbox dispatch failed: Database unavailable',
+        failure.stack,
+      );
+      expect(publisher.publishEvent).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(REALTIME_OUTBOX_POLL_INTERVAL_MS);
+
+      expect(publisher.publishEvent).toHaveBeenCalledWith(event);
+      expect(repository.markAsPublished).toHaveBeenCalledWith(
+        'event-1',
+        'claim-1',
+      );
+      expect(loggedError).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('contains a failed claim release and resumes publishing other pending events', async () => {
+    const loggedError = enablePolling();
+    const failure = new Error('Database unavailable during claim release');
+    repository.claimNextBatch
+      .mockResolvedValueOnce([
+        { id: 'event-1', claim_token: 'claim-1', payload: event },
+      ])
+      .mockResolvedValueOnce([
+        { id: 'event-2', claim_token: 'claim-2', payload: event },
+      ]);
+    publisher.publishEvent.mockRejectedValueOnce(
+      new Error('Redis unavailable'),
+    );
+    repository.releaseClaim.mockRejectedValueOnce(failure);
+
+    dispatcher.onModuleInit();
+    await jest.advanceTimersByTimeAsync(0);
+
+    expect(loggedError).toHaveBeenCalledWith(
+      'Realtime outbox dispatch failed: Database unavailable during claim release',
+      failure.stack,
+    );
+
+    await jest.advanceTimersByTimeAsync(REALTIME_OUTBOX_POLL_INTERVAL_MS);
+
+    expect(publisher.publishEvent).toHaveBeenCalledTimes(2);
+    expect(repository.markAsPublished).toHaveBeenCalledWith(
+      'event-2',
+      'claim-2',
+    );
+    expect(repository.releaseClaim).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not overlap slow dispatches or log the same failure on every tick', async () => {
+    const loggedError = enablePolling();
+    const failure = new Error('Slow database request failed');
+    let rejectClaim!: (error: Error) => void;
+    repository.claimNextBatch.mockReturnValueOnce(
+      new Promise<never>((_, reject) => {
+        rejectClaim = reject;
+      }),
+    );
+
+    dispatcher.onModuleInit();
+    await jest.advanceTimersByTimeAsync(REALTIME_OUTBOX_POLL_INTERVAL_MS * 2);
+    expect(repository.claimNextBatch).toHaveBeenCalledTimes(1);
+
+    rejectClaim(failure);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(loggedError).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(REALTIME_OUTBOX_POLL_INTERVAL_MS);
+    expect(repository.claimNextBatch).toHaveBeenCalledTimes(2);
+    expect(loggedError).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for an in-flight failure during shutdown and stops polling', async () => {
+    const loggedError = enablePolling();
+    let rejectClaim!: (error: Error) => void;
+    repository.claimNextBatch.mockReturnValueOnce(
+      new Promise<never>((_, reject) => {
+        rejectClaim = reject;
+      }),
+    );
+
+    dispatcher.onModuleInit();
+    const shutdown = dispatcher.onApplicationShutdown();
+    rejectClaim(new Error('Database unavailable during shutdown'));
+
+    await expect(shutdown).resolves.toBeUndefined();
+    await jest.advanceTimersByTimeAsync(REALTIME_OUTBOX_POLL_INTERVAL_MS);
+    expect(loggedError).toHaveBeenCalledTimes(1);
+    expect(repository.claimNextBatch).toHaveBeenCalledTimes(1);
   });
 });
