@@ -17,6 +17,7 @@ BTC/USD limit order exchange built with a separate API process and matching work
 - Matching transactions acquire a PostgreSQL advisory lock for BTC/USD before locking orders or wallets. Commit and rollback release the lock automatically, including for direct service calls outside BullMQ.
 - Matching waits for locked maker orders in price-time order, then reloads and revalidates each maker. A committed cancellation removes that maker from consideration; a rolled-back cancellation preserves its priority.
 - Maker candidates are fetched one at a time using price/sequence cursors, stopping when executable fills cover the taker. Required order locks are acquired before wallet updates; zero-cost dust does not count toward coverage.
+- Matching and realtime outbox pollers log dispatch failures and resume on subsequent polling cycles. Shutdown stops polling and waits for any in-flight dispatch to settle.
 - PostgreSQL is the source of truth for users, wallets, orders and trades
 - Redis is used for BullMQ jobs and realtime exchange events
 
