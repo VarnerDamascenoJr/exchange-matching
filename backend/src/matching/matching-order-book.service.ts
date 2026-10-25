@@ -1,10 +1,19 @@
 import { Injectable } from '@nestjs/common';
-import { Order, OrderSide, OrderStatus, PrismaClient } from '@prisma/client';
+import {
+  Order,
+  OrderSide,
+  OrderStatus,
+  Prisma,
+  PrismaClient,
+} from '@prisma/client';
+import { multiplyScaled, subtractScaled } from '../common/decimal.utils';
 
 type TransactionClient = Omit<
   PrismaClient,
   '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
 >;
+
+type MakerCursor = Pick<Order, 'price' | 'sequence'>;
 
 @Injectable()
 export class MatchingOrderBookService {
@@ -12,37 +21,25 @@ export class MatchingOrderBookService {
     transactionClient: TransactionClient,
     taker: Order,
   ): Promise<Order[]> {
-    const candidateIds = await transactionClient.order.findMany({
-      where: {
-        side: taker.side === OrderSide.BUY ? OrderSide.SELL : OrderSide.BUY,
-        userId: {
-          not: taker.userId,
-        },
-        status: {
-          in: [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED],
-        },
-        price:
-          taker.side === OrderSide.BUY
-            ? {
-                lte: taker.price,
-              }
-            : {
-                gte: taker.price,
-              },
-      },
-      select: {
-        id: true,
-      },
-      orderBy:
-        taker.side === OrderSide.BUY
-          ? [{ price: 'asc' }, { sequence: 'asc' }]
-          : [{ price: 'desc' }, { sequence: 'asc' }],
-    });
-
     const makers: Order[] = [];
+    let remaining = new Prisma.Decimal(taker.remainingAmount);
+    let cursor: MakerCursor | undefined;
 
-    for (const candidate of candidateIds) {
-      // Wait for earlier makers so a concurrent cancellation cannot bypass priority.
+    // Select the required order locks before settlement acquires wallet locks.
+    while (remaining.gt(0)) {
+      const candidate = await this.findNextCandidate(
+        transactionClient,
+        taker,
+        cursor,
+      );
+
+      if (!candidate) {
+        break;
+      }
+
+      // Advance even if this candidate is cancelled or deleted while we wait.
+      cursor = candidate;
+
       const lockedRows = await transactionClient.$queryRaw<{ id: string }[]>`
         SELECT "id"
         FROM "orders"
@@ -54,11 +51,8 @@ export class MatchingOrderBookService {
         continue;
       }
 
-      // Reload after the wait: cancellation may have committed or rolled back.
       const maker = await transactionClient.order.findUnique({
-        where: {
-          id: candidate.id,
-        },
+        where: { id: candidate.id },
       });
 
       if (!maker || !this.isEligibleMaker(taker, maker)) {
@@ -66,9 +60,59 @@ export class MatchingOrderBookService {
       }
 
       makers.push(maker);
+      const amount = remaining.lt(maker.remainingAmount)
+        ? remaining
+        : maker.remainingAmount;
+
+      // Dust cannot cover the taker: settlement skips zero-cost fragments.
+      if (multiplyScaled(amount, maker.price).gt(0)) {
+        remaining = subtractScaled(remaining, amount);
+      }
     }
 
     return makers;
+  }
+
+  private findNextCandidate(
+    transactionClient: TransactionClient,
+    taker: Order,
+    cursor?: MakerCursor,
+  ) {
+    const buying = taker.side === OrderSide.BUY;
+    return transactionClient.order.findFirst({
+      where: {
+        side: buying ? OrderSide.SELL : OrderSide.BUY,
+        userId: {
+          not: taker.userId,
+        },
+        status: {
+          in: [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED],
+        },
+        price: buying
+          ? {
+              lte: taker.price,
+            }
+          : {
+              gte: taker.price,
+            },
+        ...(cursor
+          ? {
+              OR: [
+                { price: buying ? { gt: cursor.price } : { lt: cursor.price } },
+                { price: cursor.price, sequence: { gt: cursor.sequence } },
+              ],
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+        price: true,
+        sequence: true,
+      },
+      orderBy: buying
+        ? [{ price: 'asc' }, { sequence: 'asc' }]
+        : [{ price: 'desc' }, { sequence: 'asc' }],
+    });
   }
 
   private isEligibleMaker(taker: Order, maker: Order): boolean {
