@@ -83,6 +83,7 @@ describe('RealtimeOutboxRepository', () => {
     const query = sql.strings.join('');
     expect(query).toContain('"published_at" IS NULL');
     expect(query).toContain('"dead_lettered_at" IS NULL');
+    expect(query).toContain('"next_attempt_at" <= NOW()');
     expect(query).toContain('"claimed_at" IS NULL');
     expect(query).toContain('ORDER BY "created_at" ASC');
     expect(query).toContain('FOR UPDATE SKIP LOCKED');
@@ -97,6 +98,7 @@ describe('RealtimeOutboxRepository', () => {
     expect(sql.strings.join('')).toContain('"published_at" = NOW()');
     expect(sql.strings.join('')).toContain('"claim_token" = NULL');
     expect(sql.strings.join('')).toContain('"last_error" = NULL');
+    expect(sql.strings.join('')).toContain('"next_attempt_at" = NULL');
     expect(sql.strings.join('')).toContain('AND "claim_token" =');
     expect(sql.values).toEqual(['event-1', 'claim-1']);
   });
@@ -107,14 +109,24 @@ describe('RealtimeOutboxRepository', () => {
       'claim-1',
       'Redis unavailable',
       10,
+      2000,
     );
     const sql = prisma.$executeRaw.mock.calls[0][0] as Prisma.Sql;
     const query = sql.strings.join('');
     expect(query).toContain('"attempt_count" = "attempt_count" + 1');
     expect(query).toContain('"attempt_count" + 1 >=');
     expect(query).toContain('"dead_lettered_at" = CASE');
+    expect(query).toContain('"next_attempt_at" = CASE');
+    expect(query).toContain("INTERVAL '1 millisecond'");
     expect(query).toContain('AND "claim_token" =');
-    expect(sql.values).toEqual(['Redis unavailable', 10, 'event-1', 'claim-1']);
+    expect(sql.values).toEqual([
+      'Redis unavailable',
+      10,
+      2000,
+      10,
+      'event-1',
+      'claim-1',
+    ]);
   });
 
   it('should prune only published and dead-lettered rows at the supplied cutoffs', async () => {

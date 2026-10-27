@@ -7,7 +7,7 @@ import {
   PROCESS_ORDER_JOB_NAME,
 } from './order-matching.constants';
 import { ProcessOrderJobData } from './order-matching.types';
-import { createRedisConnection } from './redis-connection.factory';
+import { createOutboxRedisOptions } from '../common/outbox-redis-options';
 
 @Injectable()
 export class OrderMatchingQueueService implements OnApplicationShutdown {
@@ -34,7 +34,16 @@ export class OrderMatchingQueueService implements OnApplicationShutdown {
       removeOnFail: 100,
     };
 
-    await this.getQueue().add(PROCESS_ORDER_JOB_NAME, { orderId }, jobOptions);
+    const queue = this.getQueue();
+    try {
+      await queue.add(PROCESS_ORDER_JOB_NAME, { orderId }, jobOptions);
+    } catch (error) {
+      if (this.queue === queue) {
+        this.queue = undefined;
+      }
+      await this.closeQueue(queue);
+      throw error;
+    }
 
     this.logger.log(
       `Enqueued ${PROCESS_ORDER_JOB_NAME} job for order ${orderId}`,
@@ -46,13 +55,38 @@ export class OrderMatchingQueueService implements OnApplicationShutdown {
       return;
     }
 
-    await this.queue.close();
+    const queue = this.queue;
+    this.queue = undefined;
+    await this.closeQueue(queue);
+  }
+
+  private async closeQueue(queue: Queue<ProcessOrderJobData>): Promise<void> {
+    try {
+      await queue.close();
+    } catch (error) {
+      this.logger.error(
+        'Failed to close matching queue gracefully',
+        error instanceof Error ? error.stack : undefined,
+      );
+      await queue.disconnect().catch((disconnectError: unknown) => {
+        this.logger.error(
+          'Failed to disconnect matching queue',
+          disconnectError instanceof Error ? disconnectError.stack : undefined,
+        );
+      });
+    }
   }
 
   private getQueue(): Queue<ProcessOrderJobData> {
     if (!this.queue) {
       this.queue = new Queue<ProcessOrderJobData>(ORDER_MATCHING_QUEUE_NAME, {
-        connection: createRedisConnection(this.configService),
+        connection: createOutboxRedisOptions(this.configService),
+      });
+      this.queue.on('error', (error: Error) => {
+        this.logger.error(
+          `Matching queue Redis error: ${error.message}`,
+          error.stack,
+        );
       });
     }
 

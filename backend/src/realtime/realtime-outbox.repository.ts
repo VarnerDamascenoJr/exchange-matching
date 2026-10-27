@@ -56,6 +56,7 @@ export class RealtimeOutboxRepository {
         FROM "realtime_event_outbox"
         WHERE "published_at" IS NULL
           AND "dead_lettered_at" IS NULL
+          AND ("next_attempt_at" IS NULL OR "next_attempt_at" <= NOW())
           AND (
             "claimed_at" IS NULL
             OR "claimed_at" < NOW() - (${claimTimeoutSeconds} * INTERVAL '1 second')
@@ -81,6 +82,7 @@ export class RealtimeOutboxRepository {
         "published_at" = NOW(),
         "claimed_at" = NULL,
         "claim_token" = NULL,
+        "next_attempt_at" = NULL,
         "last_error" = NULL
       WHERE "id" = ${id}
         AND "claim_token" = ${claimToken}
@@ -92,6 +94,7 @@ export class RealtimeOutboxRepository {
     claimToken: string,
     lastError: string,
     maxAttempts: number,
+    retryDelayMs: number,
   ): Promise<void> {
     await this.prismaService.$executeRaw(Prisma.sql`
       UPDATE "realtime_event_outbox"
@@ -100,6 +103,10 @@ export class RealtimeOutboxRepository {
         "claimed_at" = NULL,
         "claim_token" = NULL,
         "last_error" = ${lastError},
+        "next_attempt_at" = CASE
+          WHEN "attempt_count" + 1 >= ${maxAttempts} THEN NULL
+          ELSE NOW() + (${retryDelayMs} * INTERVAL '1 millisecond')
+        END,
         "dead_lettered_at" = CASE
           WHEN "attempt_count" + 1 >= ${maxAttempts}
             THEN NOW()
