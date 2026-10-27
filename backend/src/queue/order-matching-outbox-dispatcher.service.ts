@@ -3,6 +3,7 @@ import {
   Logger,
   OnApplicationShutdown,
   OnModuleInit,
+  OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
@@ -11,6 +12,7 @@ import {
   ORDER_MATCHING_OUTBOX_BATCH_SIZE,
   ORDER_MATCHING_OUTBOX_CLAIM_TIMEOUT_SECONDS,
   ORDER_MATCHING_OUTBOX_POLL_INTERVAL_MS,
+  ORDER_MATCHING_OUTBOX_RETRY_DELAY_MS,
 } from './order-matching.constants';
 import { OrderMatchingQueueService } from './order-matching.queue';
 
@@ -22,13 +24,14 @@ type ClaimedOrderMatchingOutboxRow = {
 
 @Injectable()
 export class OrderMatchingOutboxDispatcherService
-  implements OnModuleInit, OnApplicationShutdown
+  implements OnModuleInit, OnModuleDestroy, OnApplicationShutdown
 {
   private readonly logger = new Logger(
     OrderMatchingOutboxDispatcherService.name,
   );
   private dispatchPromise: Promise<void> | null = null;
   private pollTimer?: NodeJS.Timeout;
+  private stopping = false;
 
   constructor(
     private readonly prismaService: PrismaService,
@@ -37,7 +40,7 @@ export class OrderMatchingOutboxDispatcherService
   ) {}
 
   onModuleInit() {
-    if (!this.shouldRunDispatcher()) {
+    if (this.stopping || !this.shouldRunDispatcher()) {
       return;
     }
 
@@ -48,15 +51,38 @@ export class OrderMatchingOutboxDispatcherService
   }
 
   async onApplicationShutdown() {
+    this.stopping = true;
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
     }
 
-    // Background dispatch reports its own failure; shutdown still drains it.
-    await this.dispatchPromise?.catch(() => undefined);
+    await this.dispatchPromise?.catch((error: unknown) => {
+      this.logFailure(
+        'Failed to finish matching outbox dispatch at shutdown',
+        error,
+      );
+    });
+  }
+
+  onModuleDestroy() {
+    return this.onApplicationShutdown();
+  }
+
+  private dispatchInBackground(): void {
+    if (this.dispatchPromise || this.stopping) {
+      return;
+    }
+    void this.dispatchPending().catch((error: unknown) => {
+      if (!this.stopping) {
+        this.logFailure('Order matching outbox dispatch failed', error);
+      }
+    });
   }
 
   async dispatchPending(): Promise<void> {
+    if (this.stopping) {
+      return;
+    }
     if (this.dispatchPromise) {
       return this.dispatchPromise;
     }
@@ -68,23 +94,8 @@ export class OrderMatchingOutboxDispatcherService
     return this.dispatchPromise;
   }
 
-  private dispatchInBackground(): void {
-    if (this.dispatchPromise) {
-      return;
-    }
-
-    void this.dispatchPending().catch((error: unknown) => {
-      const message =
-        error instanceof Error ? error.message : 'Unknown dispatch error';
-      this.logger.error(
-        `Order matching outbox dispatch failed: ${message}`,
-        error instanceof Error ? error.stack : undefined,
-      );
-    });
-  }
-
   private async dispatchLoop(): Promise<void> {
-    while (true) {
+    while (!this.stopping) {
       const claimedRows = await this.claimNextBatch();
 
       if (claimedRows.length === 0) {
@@ -107,8 +118,15 @@ export class OrderMatchingOutboxDispatcherService
             `Failed to enqueue matching job for order ${row.order_id}: ${message}`,
             error instanceof Error ? error.stack : undefined,
           );
-          await this.releaseClaim(row.id, row.claim_token, message);
           hasFailedDispatch = true;
+          try {
+            await this.releaseClaim(row.id, row.claim_token, message);
+          } catch (releaseError) {
+            this.logFailure(
+              `Failed to release matching claim ${row.id}; its lease must expire before retry`,
+              releaseError,
+            );
+          }
         }
       }
 
@@ -132,8 +150,9 @@ export class OrderMatchingOutboxDispatcherService
       WITH claimable AS (
         SELECT "id"
         FROM "order_matching_outbox"
-        WHERE "claimed_at" IS NULL
-          OR "claimed_at" < NOW() - ${claimTimeoutInterval}
+        WHERE ("claimed_at" IS NULL
+          OR "claimed_at" < NOW() - ${claimTimeoutInterval})
+          AND ("next_attempt_at" IS NULL OR "next_attempt_at" <= NOW())
         ORDER BY "created_at" ASC
         LIMIT ${ORDER_MATCHING_OUTBOX_BATCH_SIZE}
         FOR UPDATE SKIP LOCKED
@@ -170,6 +189,7 @@ export class OrderMatchingOutboxDispatcherService
         "attempt_count" = "attempt_count" + 1,
         "claimed_at" = NULL,
         "claim_token" = NULL,
+        "next_attempt_at" = NOW() + (${ORDER_MATCHING_OUTBOX_RETRY_DELAY_MS} * INTERVAL '1 millisecond'),
         "last_error" = ${lastError}
       WHERE "id" = ${id}
         AND "claim_token" = ${claimToken}
@@ -180,6 +200,13 @@ export class OrderMatchingOutboxDispatcherService
     return (
       this.configService.get<string>('NODE_ENV') !== 'test' ||
       this.configService.get<boolean>('RUN_DATABASE_E2E') === true
+    );
+  }
+
+  private logFailure(context: string, error: unknown): void {
+    this.logger.error(
+      `${context}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      error instanceof Error ? error.stack : undefined,
     );
   }
 
