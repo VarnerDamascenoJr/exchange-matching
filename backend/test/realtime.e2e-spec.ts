@@ -143,7 +143,13 @@ describeDatabase('Realtime outbox persistence (e2e)', () => {
     await outbox.appendNow([event]);
     const [row] = await repository.claimNextBatch('owner-token', 1, 30);
     await repository.markAsPublished(row.id, 'stale-token');
-    await repository.releaseClaim(row.id, 'stale-token', 'Old failure', 10);
+    await repository.releaseClaim(
+      row.id,
+      'stale-token',
+      'Old failure',
+      10,
+      2000,
+    );
     await expect(
       prisma.realtimeEventOutbox.findUniqueOrThrow({ where: { id: row.id } }),
     ).resolves.toMatchObject({
@@ -166,7 +172,7 @@ describeDatabase('Realtime outbox persistence (e2e)', () => {
   it('should dead-letter an event at the retry threshold and stop reclaiming it', async () => {
     await outbox.appendNow([event]);
     const [first] = await repository.claimNextBatch('claim-1', 1, 30);
-    await repository.releaseClaim(first.id, 'claim-1', 'First failure', 2);
+    await repository.releaseClaim(first.id, 'claim-1', 'First failure', 2, 0);
     await expect(
       prisma.realtimeEventOutbox.findUniqueOrThrow({ where: { id: first.id } }),
     ).resolves.toMatchObject({
@@ -178,7 +184,7 @@ describeDatabase('Realtime outbox persistence (e2e)', () => {
     });
     const [second] = await repository.claimNextBatch('claim-2', 1, 30);
     expect(second.id).toBe(first.id);
-    await repository.releaseClaim(second.id, 'claim-2', 'Second failure', 2);
+    await repository.releaseClaim(second.id, 'claim-2', 'Second failure', 2, 0);
     await expect(
       prisma.realtimeEventOutbox.findUniqueOrThrow({ where: { id: first.id } }),
     ).resolves.toMatchObject({
