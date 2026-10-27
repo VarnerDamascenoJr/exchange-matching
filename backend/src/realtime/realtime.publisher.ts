@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { createOutboxRedisOptions } from '../common/outbox-redis-options';
 import { REALTIME_EVENTS_CHANNEL } from './realtime.constants';
 import { RealtimeDispatchEvent } from './realtime.types';
 
@@ -16,10 +17,16 @@ export class RealtimePublisherService implements OnApplicationShutdown {
       return;
     }
 
-    await this.getPublisher().publish(
-      REALTIME_EVENTS_CHANNEL,
-      JSON.stringify(event),
-    );
+    const publisher = this.getPublisher();
+    try {
+      await publisher.publish(REALTIME_EVENTS_CHANNEL, JSON.stringify(event));
+    } catch (error) {
+      if (this.publisher === publisher) {
+        this.publisher = undefined;
+      }
+      publisher.disconnect();
+      throw error;
+    }
   }
 
   async onApplicationShutdown() {
@@ -27,15 +34,22 @@ export class RealtimePublisherService implements OnApplicationShutdown {
       return;
     }
 
-    await this.publisher.quit();
+    const publisher = this.publisher;
+    this.publisher = undefined;
+    try {
+      await publisher.quit();
+    } catch (error) {
+      publisher.disconnect();
+      this.logger.error(
+        'Failed to close realtime publisher gracefully',
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
   }
 
   private getPublisher() {
     if (!this.publisher) {
-      this.publisher = new Redis({
-        host: this.configService.getOrThrow<string>('REDIS_HOST'),
-        port: this.configService.getOrThrow<number>('REDIS_PORT'),
-      });
+      this.publisher = new Redis(createOutboxRedisOptions(this.configService));
 
       this.publisher.on('error', (error) => {
         this.logger.error(
