@@ -3,6 +3,7 @@ import {
   Logger,
   OnApplicationShutdown,
   OnModuleInit,
+  OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RealtimeOutboxRepository } from './realtime-outbox.repository';
@@ -14,18 +15,21 @@ import {
   REALTIME_OUTBOX_MAX_ATTEMPTS,
   REALTIME_OUTBOX_POLL_INTERVAL_MS,
   REALTIME_OUTBOX_PUBLISHED_RETENTION_DAYS,
+  REALTIME_OUTBOX_RETRY_DELAY_MS,
 } from './realtime.constants';
 import { RealtimePublisherService } from './realtime.publisher';
 import { RealtimeDispatchEvent } from './realtime.types';
 
 @Injectable()
 export class RealtimeOutboxDispatcherService
-  implements OnModuleInit, OnApplicationShutdown
+  implements OnModuleInit, OnModuleDestroy, OnApplicationShutdown
 {
   private readonly logger = new Logger(RealtimeOutboxDispatcherService.name);
   private dispatchPromise: Promise<void> | null = null;
+  private maintenancePromise: Promise<void> | null = null;
   private pollTimer?: NodeJS.Timeout;
-  private lastMaintenanceAt = 0;
+  private lastMaintenanceAt: number | null = null;
+  private stopping = false;
 
   constructor(
     private readonly realtimeOutboxRepository: RealtimeOutboxRepository,
@@ -34,7 +38,7 @@ export class RealtimeOutboxDispatcherService
   ) {}
 
   onModuleInit() {
-    if (!this.shouldRunRealtime()) {
+    if (this.stopping || !this.shouldRunRealtime()) {
       return;
     }
 
@@ -47,15 +51,47 @@ export class RealtimeOutboxDispatcherService
   }
 
   async onApplicationShutdown() {
+    this.stopping = true;
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
     }
 
-    // Background dispatch reports its own failure; shutdown still drains it.
-    await this.dispatchPromise?.catch(() => undefined);
+    await Promise.all([
+      this.dispatchPromise?.catch((error: unknown) =>
+        this.logFailure(
+          'Failed to finish realtime dispatch at shutdown',
+          error,
+        ),
+      ),
+      this.maintenancePromise?.catch((error: unknown) =>
+        this.logFailure(
+          'Failed to finish realtime maintenance at shutdown',
+          error,
+        ),
+      ),
+    ]);
+  }
+
+  // Drain while Prisma and the Redis publisher are still available.
+  onModuleDestroy() {
+    return this.onApplicationShutdown();
+  }
+
+  private dispatchInBackground(): void {
+    if (this.dispatchPromise || this.stopping) {
+      return;
+    }
+    void this.dispatchPending().catch((error: unknown) => {
+      if (!this.stopping) {
+        this.logFailure('Realtime outbox dispatch failed', error);
+      }
+    });
   }
 
   async dispatchPending(): Promise<void> {
+    if (this.stopping) {
+      return;
+    }
     if (this.dispatchPromise) {
       return this.dispatchPromise;
     }
@@ -67,23 +103,8 @@ export class RealtimeOutboxDispatcherService
     return this.dispatchPromise;
   }
 
-  private dispatchInBackground(): void {
-    if (this.dispatchPromise) {
-      return;
-    }
-
-    void this.dispatchPending().catch((error: unknown) => {
-      const message =
-        error instanceof Error ? error.message : 'Unknown dispatch error';
-      this.logger.error(
-        `Realtime outbox dispatch failed: ${message}`,
-        error instanceof Error ? error.stack : undefined,
-      );
-    });
-  }
-
   private async dispatchLoop(): Promise<void> {
-    while (true) {
+    while (!this.stopping) {
       const claimedRows = await this.realtimeOutboxRepository.claimNextBatch(
         this.createClaimToken(),
         REALTIME_OUTBOX_BATCH_SIZE,
@@ -94,6 +115,7 @@ export class RealtimeOutboxDispatcherService
         return;
       }
 
+      let hasFailedDispatch = false;
       for (const row of claimedRows) {
         try {
           const event = this.normalizePayload(row.payload);
@@ -103,6 +125,7 @@ export class RealtimeOutboxDispatcherService
             row.claim_token,
           );
         } catch (error) {
+          hasFailedDispatch = true;
           const message =
             error instanceof Error ? error.message : 'Unknown dispatch error';
 
@@ -111,13 +134,24 @@ export class RealtimeOutboxDispatcherService
             error instanceof Error ? error.stack : undefined,
           );
 
-          await this.realtimeOutboxRepository.releaseClaim(
-            row.id,
-            row.claim_token,
-            message,
-            REALTIME_OUTBOX_MAX_ATTEMPTS,
-          );
+          try {
+            await this.realtimeOutboxRepository.releaseClaim(
+              row.id,
+              row.claim_token,
+              message,
+              REALTIME_OUTBOX_MAX_ATTEMPTS,
+              REALTIME_OUTBOX_RETRY_DELAY_MS,
+            );
+          } catch (releaseError) {
+            this.logFailure(
+              `Failed to release realtime claim ${row.id}; its lease must expire before retry`,
+              releaseError,
+            );
+          }
         }
+      }
+      if (hasFailedDispatch) {
+        return;
       }
     }
   }
@@ -131,6 +165,12 @@ export class RealtimeOutboxDispatcherService
   }
 
   async pruneExpiredEvents(): Promise<void> {
+    if (this.stopping) {
+      return;
+    }
+    if (this.maintenancePromise) {
+      return this.maintenancePromise;
+    }
     const now = Date.now();
     const publishedCutoff = new Date(
       now - REALTIME_OUTBOX_PUBLISHED_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
@@ -139,18 +179,23 @@ export class RealtimeOutboxDispatcherService
       now - REALTIME_OUTBOX_DEAD_LETTER_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
     );
 
-    await this.realtimeOutboxRepository.pruneExpiredEvents(
-      publishedCutoff,
-      deadLetterCutoff,
-    );
+    this.maintenancePromise = this.realtimeOutboxRepository
+      .pruneExpiredEvents(publishedCutoff, deadLetterCutoff)
+      .finally(() => {
+        this.maintenancePromise = null;
+      });
+    return this.maintenancePromise;
   }
 
   private async runMaintenanceIfDue(): Promise<void> {
+    if (this.stopping || this.maintenancePromise) {
+      return;
+    }
     const now = Date.now();
 
     if (
-      now - this.lastMaintenanceAt <
-      REALTIME_OUTBOX_MAINTENANCE_INTERVAL_MS
+      this.lastMaintenanceAt !== null &&
+      now - this.lastMaintenanceAt < REALTIME_OUTBOX_MAINTENANCE_INTERVAL_MS
     ) {
       return;
     }
@@ -160,10 +205,16 @@ export class RealtimeOutboxDispatcherService
     try {
       await this.pruneExpiredEvents();
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Unknown maintenance error';
-      this.logger.error(`Failed to prune realtime outbox events: ${message}`);
+      this.lastMaintenanceAt = null;
+      this.logFailure('Failed to prune realtime outbox events', error);
     }
+  }
+
+  private logFailure(context: string, error: unknown): void {
+    this.logger.error(
+      `${context}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      error instanceof Error ? error.stack : undefined,
+    );
   }
 
   private shouldRunRealtime(): boolean {
