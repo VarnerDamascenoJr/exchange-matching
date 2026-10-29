@@ -1,11 +1,15 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const backend = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const frontend = resolve(backend, '../frontend');
+const browserRun = process.argv[2] === '--browser';
+const testArgs = process.argv.slice(browserRun ? 3 : 2);
 const runId = randomUUID().replaceAll('-', '');
 const project = `exchange-e2e-${runId}`;
 const database = `exchange_matching_e2e_${runId}`;
@@ -59,12 +63,12 @@ process.on('SIGTERM', onSignal);
 async function command(
   executable,
   args,
-  { capture = false, cleanup = false, timeout = 0 } = {},
+  { capture = false, cleanup = false, timeout = 0, cwd = backend } = {},
 ) {
   if (interrupted && !cleanup) throw new Error('Run interrupted');
   return new Promise((resolveCommand, reject) => {
     const child = spawn(executable, args, {
-      cwd: backend,
+      cwd,
       env: environment,
       stdio: capture ? ['ignore', 'pipe', 'inherit'] : 'inherit',
       detached: process.platform !== 'win32',
@@ -114,6 +118,28 @@ async function publishedPort(service, port) {
   return published;
 }
 
+async function browserPorts() {
+  const servers = [createServer(), createServer()];
+  try {
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise((resolveListen, reject) => {
+            server.once('error', reject);
+            server.listen(0, '127.0.0.1', resolveListen);
+          }),
+      ),
+    );
+    return servers.map((server) => server.address().port);
+  } finally {
+    await Promise.all(
+      servers.map(
+        (server) => new Promise((resolveClose) => server.close(resolveClose)),
+      ),
+    );
+  }
+}
+
 try {
   console.log(`Starting isolated E2E project ${project}.`);
   started = true;
@@ -141,13 +167,22 @@ try {
     E2E_ISOLATION_FILE: contextFile,
   });
   await command('npm', ['run', 'prisma:migrate:deploy'], { timeout: 120_000 });
-  await command('npm', [
-    'run',
-    'test:e2e',
-    '--',
-    '--runInBand',
-    ...process.argv.slice(2),
-  ]);
+  if (browserRun) {
+    const [apiPort, webPort] = await browserPorts();
+    Object.assign(environment, {
+      E2E_API_PORT: String(apiPort),
+      E2E_WEB_PORT: String(webPort),
+      PORT: String(apiPort),
+      VITE_API_BASE_URL: `http://127.0.0.1:${apiPort}`,
+      JWT_SECRET: 'isolated-browser-e2e-secret',
+      JWT_EXPIRES_IN: '1h',
+    });
+    await command('npm', ['run', 'test:e2e:browser', '--', ...testArgs], {
+      cwd: frontend,
+    });
+  } else {
+    await command('npm', ['run', 'test:e2e', '--', '--runInBand', ...testArgs]);
+  }
 } catch (error) {
   exitCode = interrupted || error.exitCode || 1;
   console.error(error.message);
