@@ -28,7 +28,8 @@ const mode = process.env.E2E_TEST_MODE;
 const phase = executable === 'npm' ? args[1] : args[args.indexOf('--file') + 2];
 const record = { executable, args, phase, pid: process.pid };
 if (executable === 'npm') {
-  record.env = Object.fromEntries(['NODE_ENV', 'RUN_DATABASE_E2E', 'DATABASE_URL', 'REDIS_HOST', 'REDIS_PORT', 'E2E_ISOLATION_FILE'].map(key => [key, process.env[key]]));
+  record.env = Object.fromEntries(['NODE_ENV', 'RUN_DATABASE_E2E', 'DATABASE_URL', 'REDIS_HOST', 'REDIS_PORT', 'E2E_ISOLATION_FILE', 'E2E_API_PORT', 'E2E_WEB_PORT', 'VITE_API_BASE_URL', 'JWT_EXPIRES_IN'].map(key => [key, process.env[key]]));
+  record.cwd = process.cwd();
   record.context = JSON.parse(fs.readFileSync(process.env.E2E_ISOLATION_FILE, 'utf8'));
 }
 fs.appendFileSync(process.env.E2E_TEST_LOG, JSON.stringify(record) + '\\n');
@@ -322,3 +323,43 @@ test('ordinary E2E force test mode and disable database access before .env is lo
   assert.equal(env.NODE_ENV, 'test');
   assert.equal(env.RUN_DATABASE_E2E, 'false');
 });
+
+test(
+  'browser mode uses dedicated API/web ports and forwards browser arguments with the same cleanup',
+  { timeout: 10_000 },
+  async (t) => {
+    const run = await fixture(t, 'success', [
+      '--browser',
+      '--project=chromium',
+    ]);
+    assert.equal((await run.done).code, 0);
+    const records = await run.calls();
+    assertCleanup(records);
+    const browser = records.find((call) => call.phase === 'test:e2e:browser');
+    assert.ok(browser);
+    assert.equal(
+      records.some((call) => call.phase === 'test:e2e'),
+      false,
+    );
+    assert.deepEqual(browser.args, [
+      'run',
+      'test:e2e:browser',
+      '--',
+      '--project=chromium',
+    ]);
+    assert.equal(
+      browser.cwd,
+      fileURLToPath(new URL('../../frontend/', import.meta.url)).replace(
+        /\/$/,
+        '',
+      ),
+    );
+    assert.notEqual(browser.env.E2E_API_PORT, browser.env.E2E_WEB_PORT);
+    assert.equal(
+      browser.env.VITE_API_BASE_URL,
+      `http://127.0.0.1:${browser.env.E2E_API_PORT}`,
+    );
+    assert.equal(browser.env.JWT_EXPIRES_IN, '1h');
+    assert.equal(existsSync(browser.env.E2E_ISOLATION_FILE), false);
+  },
+);
