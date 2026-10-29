@@ -196,6 +196,21 @@ npm run test -- --run
 npm run build
 ```
 
+Frontend browser journeys run against the real API, matching worker, PostgreSQL and Redis. After installing backend dependencies and generating Prisma, build the API/worker and install the browser once:
+
+```bash
+cd backend
+npm run build
+cd ../frontend
+npm ci
+npx playwright install chromium
+npm run test:e2e
+```
+
+`npm run test:e2e` provisions the same isolated infrastructure as the backend database runner, applies migrations, chooses separate API/frontend ports, and starts the API, worker and Vite through Playwright. Existing application servers are never reused. The journey checks two independent users placing and matching orders, maker/taker fees, balances, book prefill, cancellation, insufficient funds, and logout. Component tests cover login validation/retry, pending order submission, server errors, cancellation retry and expired-session handling; existing precision tests cover book prefill in both directions.
+
+On a host where bundled Chromium is unavailable but Google Chrome is installed, use `PLAYWRIGHT_BROWSER_CHANNEL=chrome npm run test:e2e`. On Linux, browser system dependencies can be installed with `npx playwright install --with-deps chromium`. CI installs Chromium and runs this journey in a separate job; failure screenshots, traces and the HTML report are retained as artifacts. Local `test-results/` and `playwright-report/` directories are ignored by Git. Use `npx playwright show-report` in `frontend` to inspect a report.
+
 ## Notes
 
 - Financial scale, rounding, minimum cost and partial-fill reservations are documented in [the decimal policy](docs/decimal-policy.md), with shared reference cases for backend and frontend tests.

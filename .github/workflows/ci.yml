@@ -74,3 +74,44 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies and build API/worker
+        working-directory: backend
+        run: |
+          npm ci
+          npm run prisma:generate
+          npm run build
+
+      - name: Install frontend dependencies and Chromium
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Test browser journeys with isolated infrastructure
+        working-directory: frontend
+        run: npm run test:e2e
+
+      - name: Upload browser failure traces and report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-results
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+          retention-days: 7
