@@ -10,30 +10,6 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_DB: exchange_matching_test
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d exchange_matching_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
     steps:
       - uses: actions/checkout@v4
 
@@ -51,12 +27,6 @@ jobs:
         working-directory: backend
         run: npm run prisma:generate
 
-      - name: Apply database migrations
-        working-directory: backend
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/exchange_matching_test?schema=public
-        run: npm run prisma:migrate:deploy
-
       - name: Lint backend
         working-directory: backend
         run: npm run lint
@@ -65,15 +35,13 @@ jobs:
         working-directory: backend
         run: NODE_ENV=test npm run test -- --runInBand
 
-      - name: Test backend e2e
+      - name: Test isolated E2E runner
         working-directory: backend
-        env:
-          NODE_ENV: test
-          RUN_DATABASE_E2E: true
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/exchange_matching_test?schema=public
-          REDIS_HOST: localhost
-          REDIS_PORT: 6379
-        run: npm run test:e2e -- --runInBand
+        run: npm run test:e2e:runner
+
+      - name: Test backend e2e with isolated PostgreSQL and Redis
+        working-directory: backend
+        run: npm run test:e2e:database
 
       - name: Build backend
         working-directory: backend
