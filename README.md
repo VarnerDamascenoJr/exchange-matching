@@ -167,16 +167,24 @@ NODE_ENV=test npm run test:e2e -- --runInBand
 npm run build
 ```
 
-To run the database-backed E2E scenarios, start the local infrastructure first and apply the migrations before running the suite:
+Database-backed E2E tests delete their fixtures. Run them with the isolated runner on Linux, macOS or WSL, with a local Docker daemon and Docker Compose supporting `up --wait`, plus the backend dependencies and generated Prisma client from the setup above:
 
 ```bash
-docker compose up -d
 cd backend
-npm run prisma:migrate:deploy
-NODE_ENV=test RUN_DATABASE_E2E=true \
-  DATABASE_URL='postgresql://postgres:postgres@localhost:5432/exchange_matching?schema=public' \
-  REDIS_HOST=localhost REDIS_PORT=6379 \
-  npm run test:e2e -- --runInBand
+npm run test:e2e:database
+```
+
+The runner creates a unique Compose project, PostgreSQL database (`exchange_matching_e2e_<run-id>`) and Redis instance on dynamically assigned loopback ports. It waits for health checks, applies migrations, then runs all E2E suites sequentially. Inherited development database/Redis settings and `.env` values are overridden. Concurrent invocations use separate infrastructure; suites within a single invocation share fixtures and run in band.
+
+Success, startup/migration/test failures, `SIGINT` (Ctrl+C) and `SIGTERM` all remove only that run's containers, network and volumes. Data lives on temporary filesystems. The runner preserves failure exit codes and returns 130/143 on interruption. If Docker cleanup fails, the command fails and prints the project and retained Compose env file so cleanup can be retried with `docker compose --project-name <project> --env-file "<printed-env-file>" --file "<printed-compose-file>" down --volumes`. `SIGKILL` or a host crash cannot run cleanup; remaining projects can be located with `docker ps -a --filter label=com.docker.compose.project` and the `exchange-e2e-` prefix.
+
+Direct `RUN_DATABASE_E2E=true npm run test:e2e` runs are rejected before test code loads unless the active runner context matches the dedicated endpoints. Ordinary `npm run test:e2e -- --runInBand` runs keep database scenarios disabled. CI uses the same isolated command.
+
+To filter a database run or test the runner's failure/interruption handling without Docker:
+
+```bash
+npm run test:e2e:database -- --runTestsByPath test/users.e2e-spec.ts
+npm run test:e2e:runner
 ```
 
 Frontend:
