@@ -110,6 +110,7 @@ describe('RealtimeOutboxRepository', () => {
       'Redis unavailable',
       10,
       2000,
+      60000,
     );
     const sql = prisma.$executeRaw.mock.calls[0][0] as Prisma.Sql;
     const query = sql.strings.join('');
@@ -123,6 +124,7 @@ describe('RealtimeOutboxRepository', () => {
       'Redis unavailable',
       10,
       2000,
+      60000,
       10,
       'event-1',
       'claim-1',

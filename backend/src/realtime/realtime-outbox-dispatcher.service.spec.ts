@@ -8,6 +8,7 @@ import {
   REALTIME_OUTBOX_BATCH_SIZE,
   REALTIME_OUTBOX_CLAIM_TIMEOUT_SECONDS,
   REALTIME_OUTBOX_MAX_ATTEMPTS,
+  REALTIME_OUTBOX_MAX_RETRY_DELAY_MS,
   REALTIME_OUTBOX_POLL_INTERVAL_MS,
   REALTIME_OUTBOX_RETRY_DELAY_MS,
   REALTIME_OUTBOX_MAINTENANCE_INTERVAL_MS,
@@ -100,6 +101,7 @@ describe('RealtimeOutboxDispatcherService', () => {
       'Redis unavailable',
       REALTIME_OUTBOX_MAX_ATTEMPTS,
       REALTIME_OUTBOX_RETRY_DELAY_MS,
+      REALTIME_OUTBOX_MAX_RETRY_DELAY_MS,
     );
     expect(repository.markAsPublished).toHaveBeenCalledTimes(1);
     expect(repository.markAsPublished).toHaveBeenCalledWith(
@@ -120,6 +122,7 @@ describe('RealtimeOutboxDispatcherService', () => {
       expect.any(String),
       REALTIME_OUTBOX_MAX_ATTEMPTS,
       REALTIME_OUTBOX_RETRY_DELAY_MS,
+      REALTIME_OUTBOX_MAX_RETRY_DELAY_MS,
     );
     expect(repository.markAsPublished).not.toHaveBeenCalled();
   });
@@ -253,6 +256,7 @@ describe('RealtimeOutboxDispatcherService', () => {
       'Acknowledgement failed',
       REALTIME_OUTBOX_MAX_ATTEMPTS,
       REALTIME_OUTBOX_RETRY_DELAY_MS,
+      REALTIME_OUTBOX_MAX_RETRY_DELAY_MS,
     );
     expect(repository.claimNextBatch).toHaveBeenCalledTimes(1);
   });

@@ -95,6 +95,7 @@ export class RealtimeOutboxRepository {
     lastError: string,
     maxAttempts: number,
     retryDelayMs: number,
+    maxRetryDelayMs: number,
   ): Promise<void> {
     await this.prismaService.$executeRaw(Prisma.sql`
       UPDATE "realtime_event_outbox"
@@ -105,7 +106,12 @@ export class RealtimeOutboxRepository {
         "last_error" = ${lastError},
         "next_attempt_at" = CASE
           WHEN "attempt_count" + 1 >= ${maxAttempts} THEN NULL
-          ELSE NOW() + (${retryDelayMs} * INTERVAL '1 millisecond')
+          ELSE NOW() + (
+            LEAST(
+              ${retryDelayMs} * POWER(2.0, "attempt_count"),
+              ${maxRetryDelayMs}
+            ) * INTERVAL '1 millisecond'
+          )
         END,
         "dead_lettered_at" = CASE
           WHEN "attempt_count" + 1 >= ${maxAttempts}
