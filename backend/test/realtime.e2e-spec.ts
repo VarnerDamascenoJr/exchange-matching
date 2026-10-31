@@ -8,7 +8,10 @@ import { RealtimeOutboxRepository } from '../src/realtime/realtime-outbox.reposi
 import { RealtimeOutboxService } from '../src/realtime/realtime-outbox.service';
 import { RealtimeOutboxDispatcherService } from '../src/realtime/realtime-outbox-dispatcher.service';
 import { RealtimePublisherService } from '../src/realtime/realtime.publisher';
-import { REALTIME_EVENTS_CHANNEL } from '../src/realtime/realtime.constants';
+import {
+  REALTIME_EVENTS_CHANNEL,
+  REALTIME_OUTBOX_MAX_RETRY_DELAY_MS,
+} from '../src/realtime/realtime.constants';
 import { RealtimeDispatchEvent } from '../src/realtime/realtime.types';
 
 const describeDatabase =
@@ -149,6 +152,7 @@ describeDatabase('Realtime outbox persistence (e2e)', () => {
       'Old failure',
       10,
       2000,
+      REALTIME_OUTBOX_MAX_RETRY_DELAY_MS,
     );
     await expect(
       prisma.realtimeEventOutbox.findUniqueOrThrow({ where: { id: row.id } }),
@@ -172,7 +176,14 @@ describeDatabase('Realtime outbox persistence (e2e)', () => {
   it('should dead-letter an event at the retry threshold and stop reclaiming it', async () => {
     await outbox.appendNow([event]);
     const [first] = await repository.claimNextBatch('claim-1', 1, 30);
-    await repository.releaseClaim(first.id, 'claim-1', 'First failure', 2, 0);
+    await repository.releaseClaim(
+      first.id,
+      'claim-1',
+      'First failure',
+      2,
+      0,
+      REALTIME_OUTBOX_MAX_RETRY_DELAY_MS,
+    );
     await expect(
       prisma.realtimeEventOutbox.findUniqueOrThrow({ where: { id: first.id } }),
     ).resolves.toMatchObject({
@@ -184,7 +195,14 @@ describeDatabase('Realtime outbox persistence (e2e)', () => {
     });
     const [second] = await repository.claimNextBatch('claim-2', 1, 30);
     expect(second.id).toBe(first.id);
-    await repository.releaseClaim(second.id, 'claim-2', 'Second failure', 2, 0);
+    await repository.releaseClaim(
+      second.id,
+      'claim-2',
+      'Second failure',
+      2,
+      0,
+      REALTIME_OUTBOX_MAX_RETRY_DELAY_MS,
+    );
     await expect(
       prisma.realtimeEventOutbox.findUniqueOrThrow({ where: { id: first.id } }),
     ).resolves.toMatchObject({
