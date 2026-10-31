@@ -151,6 +151,77 @@ describeDatabase('Durable outbox retry and recovery (e2e)', () => {
     });
   });
 
+  it('backs off realtime retries across dispatchers and dead-letters the tenth failure', async () => {
+    await outbox.appendNow([event]);
+    const { id } = await prisma.realtimeEventOutbox.findFirstOrThrow();
+    const publishEvent = jest
+      .fn()
+      .mockRejectedValue(new Error('Redis unavailable'));
+    const retryDelays = [
+      2_000,
+      4_000,
+      8_000,
+      16_000,
+      32_000,
+      60_000,
+      60_000,
+      60_000,
+      60_000,
+      null,
+    ];
+
+    const createDispatcher = () =>
+      new RealtimeOutboxDispatcherService(
+        new RealtimeOutboxRepository(prisma),
+        config,
+        { publishEvent } as unknown as RealtimePublisherService,
+      );
+
+    for (const [index, delay] of retryDelays.entries()) {
+      const startedAt = Date.now();
+      await createDispatcher().dispatchPending();
+      const finishedAt = Date.now();
+      const row = await prisma.realtimeEventOutbox.findUniqueOrThrow({
+        where: { id },
+      });
+      expect(row).toMatchObject({
+        attemptCount: index + 1,
+        claimToken: null,
+        claimedAt: null,
+        publishedAt: null,
+        lastError: 'Redis unavailable',
+      });
+
+      if (delay === null) {
+        expect(row.nextAttemptAt).toBeNull();
+        expect(row.deadLetteredAt).toBeInstanceOf(Date);
+      } else {
+        expect(row.deadLetteredAt).toBeNull();
+        expect(row.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(
+          startedAt + delay - 1,
+        );
+        expect(row.nextAttemptAt!.getTime()).toBeLessThanOrEqual(
+          finishedAt + delay + 1,
+        );
+      }
+
+      // New dispatcher instances must honor the stored deadline or dead letter.
+      await createDispatcher().dispatchPending();
+      expect(publishEvent).toHaveBeenCalledTimes(index + 1);
+      await expect(
+        prisma.realtimeEventOutbox.findUniqueOrThrow({ where: { id } }),
+      ).resolves.toEqual(row);
+
+      if (delay !== null) {
+        // Advance eligibility in the database without waiting on wall-clock time.
+        await prisma.realtimeEventOutbox.update({
+          where: { id },
+          data: { nextAttemptAt: new Date(0) },
+        });
+      }
+    }
+  });
+
   it('keeps a realtime claim recoverable after release persistence fails', async () => {
     await outbox.appendNow([event, event]);
     const publishEvent = jest
