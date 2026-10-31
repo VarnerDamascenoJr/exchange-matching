@@ -41,6 +41,13 @@ export class OrderMatchingWorker
       },
     );
 
+    this.worker.on('error', (error: Error) => {
+      this.logger.error(
+        `Matching worker error for queue ${ORDER_MATCHING_QUEUE_NAME}: ${error.message}`,
+        error.stack,
+      );
+    });
+
     this.worker.on('completed', (job: Job<ProcessOrderJobData>) => {
       this.logger.log(`Completed job ${job.id} for order ${job.data.orderId}`);
     });
