@@ -125,7 +125,7 @@ export function ExchangePage() {
             display: 'grid',
             gap: 3,
             gridTemplateColumns: {
-              xs: '1fr',
+              xs: 'minmax(0, 1fr)',
               xl: 'repeat(12, minmax(0, 1fr))',
             },
           }}
