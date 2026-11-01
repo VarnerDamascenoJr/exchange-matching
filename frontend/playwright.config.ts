@@ -53,7 +53,8 @@ export default defineConfig({
     },
     {
       name: 'Matching worker',
-      command: 'node ../backend/dist/src/worker.js',
+      // Exercise the public worker command against the compiled entrypoint.
+      command: 'npm --prefix ../backend run start:worker',
       wait: { stdout: /Worker started for queue/ },
       gracefulShutdown: shutdown,
     },

@@ -16,7 +16,7 @@
     "start:api:dev": "nest start --watch",
     "start:api:debug": "nest start --debug --watch",
     "start:api:prod": "node dist/src/main.js",
-    "start:worker": "node dist/worker",
+    "start:worker": "node dist/src/worker.js",
     "start:worker:dev": "nest start --watch --entryFile worker",
     "prisma:generate": "prisma generate",
     "prisma:seed": "ts-node --project tsconfig.json prisma/seed.ts",
