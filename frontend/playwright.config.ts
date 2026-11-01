@@ -44,7 +44,8 @@ export default defineConfig({
   webServer: [
     {
       name: 'API',
-      command: 'node ../backend/dist/src/main.js',
+      // Exercise the production alias and the API entrypoint it delegates to.
+      command: 'npm --prefix ../backend run start:prod',
       url: `${apiURL}/health`,
       env: { PORT: String(apiPort) },
       reuseExistingServer: false,
