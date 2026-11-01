@@ -46,7 +46,7 @@ describe('MarketRepository', () => {
       select: { price: true },
     });
     const [sql] = prisma.$queryRaw.mock.calls[0] as [TemplateStringsArray];
-    expect(sql.join('')).toContain('SUM("amount" * "price")');
+    expect(sql.join('')).toContain('SUM(TRUNC("amount" * "price", 8))');
     expect(sql.join('')).toContain(
       'WHERE "created_at" >= NOW() - INTERVAL \'24 hours\'',
     );

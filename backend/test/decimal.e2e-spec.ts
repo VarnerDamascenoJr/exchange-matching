@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
+import { MarketStatsSummary } from '../src/market/market.mapper';
 import { MatchingModule } from '../src/matching/matching.module';
 import { MatchingService } from '../src/matching/matching.service';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -80,6 +81,73 @@ describeDatabase('Decimal monetary contract (e2e)', () => {
       reservedBtc: value.reservedBtc.toFixed(8),
     };
   }
+
+  it.each(['maker', 'taker'] as const)(
+    'reports USD volume as the sum of settled fill costs for a BUY %s',
+    async (role) => {
+      const buyer = await login('decimal-volume-buyer');
+      const seller = await login('decimal-volume-seller');
+      const stats = async () => {
+        const response = await request(app.getHttpServer())
+          .get('/market/stats')
+          .set('Authorization', `Bearer ${buyer.accessToken}`)
+          .expect(200);
+        return response.body as MarketStatsSummary;
+      };
+      expect(await stats()).toEqual({
+        lastPrice: null,
+        btcVolume24h: '0.00000000',
+        usdVolume24h: '0.00000000',
+        high24h: null,
+        low24h: null,
+        bestBid: null,
+        bestAsk: null,
+      });
+
+      const buy = await order(buyer.accessToken, 'BUY', '0.2', '0.33333333');
+      if (role === 'maker') await matching.processOrder(buy.id);
+      for (let index = 0; index < 2; index += 1) {
+        const sell = await order(
+          seller.accessToken,
+          'SELL',
+          '0.1',
+          '0.33333333',
+        );
+        await matching.processOrder(sell.id);
+      }
+      if (role === 'taker') await matching.processOrder(buy.id);
+
+      const trades = await prisma.trade.findMany();
+      expect(trades).toHaveLength(2);
+      for (const trade of trades) {
+        expect(trade.amount.toFixed(8)).toBe('0.10000000');
+        expect(trade.price.toFixed(8)).toBe('0.33333333');
+      }
+      const buyerWallet = await wallet(buyer.user.id);
+      // The extra unit reserved for the aggregate BUY cost is refunded.
+      expect(buyerWallet.availableUsd).toBe('99999.93333334');
+      expect(buyerWallet.reservedUsd).toBe('0.00000000');
+      expect(await stats()).toEqual({
+        lastPrice: '0.33333333',
+        btcVolume24h: '0.20000000',
+        usdVolume24h: '0.06666666',
+        high24h: '0.33333333',
+        low24h: '0.33333333',
+        bestBid: null,
+        bestAsk: null,
+      });
+
+      // Exclude an old fill from both volumes and retain the recent fill.
+      await prisma.trade.update({
+        where: { id: trades[0].id },
+        data: { createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000) },
+      });
+      expect(await stats()).toMatchObject({
+        btcVolume24h: '0.10000000',
+        usdVolume24h: '0.03333333',
+      });
+    },
+  );
 
   it.each([
     ['0.5', '0.00000001'],

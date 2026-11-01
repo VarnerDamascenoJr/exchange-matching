@@ -31,6 +31,8 @@ The buyer pays `floor8(q × makerPrice)` USD. Any excess debit is credited to av
 
 This keeps reservations equal to the remaining order cost after every fill. Cancellation/rejection releases exactly the remaining reservation, including zero for a BUY dust remainder. Per-fill costs are not replaced by a rounded aggregate cost, and rounding surpluses are not collected as fees.
 
+The 24-hour USD market volume sums each fill's quantized cost, before fees: `SUM(TRUNC(amount × price, 8))`. Two fills of `0.1 × 0.33333333` contribute `0.06666666 USD`. BTC volume sums the executed amounts over the same 24-hour window.
+
 Balance writes atomically require sufficient debited balances and enough numeric capacity for credits. A failed condition produces a validation error (or a failed reservation) and the enclosing transaction rolls back; no partially settled trade persists.
 
 This change does not migrate or reconcile legacy wallet balances/reservations already affected by the previous rounding rules. Existing inconsistent data requires a separate reconciliation before reuse.

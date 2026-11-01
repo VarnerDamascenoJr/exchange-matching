@@ -23,7 +23,8 @@ export class MarketRepository {
       this.prismaService.$queryRaw<TradeStats[]>`
         SELECT
           COALESCE(SUM("amount"), 0) AS "btc_volume_24h",
-          COALESCE(SUM("amount" * "price"), 0) AS "usd_volume_24h",
+          -- Match settlement's eight-place ROUND_DOWN cost for each fill.
+          COALESCE(SUM(TRUNC("amount" * "price", 8)), 0) AS "usd_volume_24h",
           MAX("price") AS "high_24h",
           MIN("price") AS "low_24h"
         FROM "trades"
