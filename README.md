@@ -211,6 +211,12 @@ npm run test:e2e
 
 On a host where bundled Chromium is unavailable but Google Chrome is installed, use `PLAYWRIGHT_BROWSER_CHANNEL=chrome npm run test:e2e`. On Linux, browser system dependencies can be installed with `npx playwright install --with-deps chromium`. CI installs Chromium and runs this journey in a separate job; failure screenshots, traces and the HTML report are retained as artifacts. Local `test-results/` and `playwright-report/` directories are ignored by Git. Use `npx playwright show-report` in `frontend` to inspect a report.
 
+## Dependency security
+
+Install with `npm ci` and lifecycle scripts enabled. The backend postinstall applies a checksum-verified security patch to development-only `deepmerge` 4.3.1 because no fixed upstream release exists. `npm ci --omit=dev` skips this absent development dependency. Validate the patch with `npm run test:security:patch` in `backend`; installations using `--ignore-scripts` must run `npm run postinstall` explicitly before using the development tools.
+
+The raw audit currently retains two distinct advisories: patched Deepmerge and a Minimatch advisory whose affected preprocessing algorithm is absent from the retained 3.x line. Modern Minimatch copies use 11.0.3. These are documented dispositions, not a claim that `npm audit` returns zero. See [the remaining-advisory review](docs/security-sec-remaining.md) for dependency paths, compatibility decisions and verification.
+
 ## Notes
 
 - Financial scale, rounding, minimum cost and partial-fill reservations are documented in [the decimal policy](docs/decimal-policy.md), with shared reference cases for backend and frontend tests.
