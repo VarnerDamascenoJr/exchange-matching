@@ -29,14 +29,16 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:e2e:database": "node scripts/run-database-e2e.mjs",
-    "test:e2e:runner": "node --test scripts/run-database-e2e.test.mjs"
+    "test:e2e:runner": "node --test scripts/run-database-e2e.test.mjs",
+    "postinstall": "node scripts/patch-deepmerge.cjs",
+    "test:security:patch": "node --test scripts/patch-deepmerge.test.cjs"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.0.1",
     "@nestjs/jwt": "^11.0.2",
-    "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/platform-express": "^11.2.8",
     "@nestjs/platform-socket.io": "^11.1.28",
     "@nestjs/websockets": "^11.1.28",
     "@prisma/client": "^6.19.3",
@@ -93,5 +95,15 @@
   },
   "prisma": {
     "seed": "npm run prisma:seed"
+  },
+  "overrides": {
+    "@nestjs/platform-express": {
+      "multer": "2.5.0"
+    },
+    "@prisma/config@6.19.3": {
+      "deepmerge-ts": "8.0.2"
+    },
+    "glob@>=9 <14": "14.0.3",
+    "minimatch@>=9 <11": "11.0.3"
   }
 }
