@@ -23,6 +23,9 @@ BTC/USD limit order exchange built with a separate API process and matching work
 - PostgreSQL is the source of truth for users, wallets, orders and trades
 - Redis is used for BullMQ jobs and realtime exchange events
 
+Delivery guarantees, retry exhaustion and the operator procedure for lost Redis
+jobs are documented in [matching recovery](docs/matching-recovery.md).
+
 ## Features
 
 - Username-only authentication with JWT
