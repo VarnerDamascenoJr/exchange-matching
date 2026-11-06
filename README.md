@@ -190,6 +190,10 @@ npm run test:e2e:database -- --runTestsByPath test/users.e2e-spec.ts
 npm run test:e2e:runner
 ```
 
+Persisted monetary sequences check per-account ledgers, reservations, fees and
+conservation after each operation. See [monetary invariants](docs/monetary-invariants.md)
+for the independent integer oracle, concurrency scenarios and seed reproduction.
+
 Frontend:
 
 ```bash
