@@ -1,13 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
+import { expectWalletBalances } from './support/wallet.js';
 
 const sessionKey = 'exchange-matching.auth-session';
 const orderForm = (page: Page, side: 'buy' | 'sell') =>
-  page
-    .locator('form')
-    .filter({
-      has: page.getByRole('button', { name: `Submit ${side} order` }),
-    });
+  page.locator('form').filter({
+    has: page.getByRole('button', { name: `Submit ${side} order` }),
+  });
 
 async function login(page: Page, username: string) {
   await page.goto('/exchange');
@@ -18,12 +17,11 @@ async function login(page: Page, username: string) {
   await expect(
     page.getByRole('heading', { name: username, exact: true }),
   ).toBeVisible();
-  await expect(
-    page.getByRole('heading', {
-      name: 'BTC 100.00 / US$ 100000.00',
-      exact: true,
-    }),
-  ).toBeVisible();
+  await expectWalletBalances(
+    page,
+    ['100.00', '0.00', '100.00'],
+    ['100000.00', '0.00', '100000.00'],
+  );
 }
 
 async function placeOrder(
@@ -42,7 +40,7 @@ async function placeOrder(
   await expect(form.getByLabel('Amount (BTC)')).toHaveValue('');
 }
 
-test('two users trade through the real worker, recover balances on cancellation, and sign out', async ({
+test('two users see available, reserved and total balances through fills and cancellation, then sign out', async ({
   browser,
   baseURL,
 }) => {
@@ -64,12 +62,11 @@ test('two users trade through the real worker, recover balances on cancellation,
     await expect(
       sellerOrders.getByRole('cell', { name: 'OPEN', exact: true }),
     ).toBeVisible();
-    await expect(
-      seller.getByRole('heading', {
-        name: 'BTC 99.75 / US$ 100000.00',
-        exact: true,
-      }),
-    ).toBeVisible();
+    await expectWalletBalances(
+      seller,
+      ['99.75', '0.25', '100.00'],
+      ['100000.00', '0.00', '100000.00'],
+    );
 
     await login(buyer, `buyer-${suffix}`);
     const buy = orderForm(buyer, 'buy');
@@ -129,18 +126,16 @@ test('two users trade through the real worker, recover balances on cancellation,
           .getByText('No active orders for this filter.'),
       ).toBeVisible();
     }
-    await expect(
-      buyer.getByRole('heading', {
-        name: 'BTC 100.24925 / US$ 97500.00',
-        exact: true,
-      }),
-    ).toBeVisible();
-    await expect(
-      seller.getByRole('heading', {
-        name: 'BTC 99.75 / US$ 102487.50',
-        exact: true,
-      }),
-    ).toBeVisible();
+    await expectWalletBalances(
+      buyer,
+      ['100.24925', '0.00', '100.24925'],
+      ['97500.00', '0.00', '97500.00'],
+    );
+    await expectWalletBalances(
+      seller,
+      ['99.75', '0.00', '99.75'],
+      ['102487.50', '0.00', '102487.50'],
+    );
     expect(JSON.parse(posts[0])).toEqual({
       side: 'BUY',
       amount: '0.25000000',
@@ -155,34 +150,46 @@ test('two users trade through the real worker, recover balances on cancellation,
     await expect(
       active.getByRole('cell', { name: 'OPEN', exact: true }),
     ).toBeVisible();
+    await expectWalletBalances(
+      buyer,
+      ['100.24925', '0.00', '100.24925'],
+      ['96600.00', '900.00', '97500.00'],
+    );
+
+    await placeOrder(seller, 'sell', '0.04000000', '9000.00000000');
     await expect(
-      buyer.getByRole('heading', {
-        name: 'BTC 100.24925 / US$ 96600.00',
-        exact: true,
-      }),
+      active.getByRole('cell', { name: 'PARTIALLY_FILLED', exact: true }),
     ).toBeVisible();
+    await expectWalletBalances(
+      buyer,
+      ['100.28905', '0.00', '100.28905'],
+      ['96600.00', '540.00', '97140.00'],
+    );
+    await expectWalletBalances(
+      seller,
+      ['99.71', '0.00', '99.71'],
+      ['102846.42', '0.00', '102846.42'],
+    );
     await active.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(
       active.getByText('No active orders for this filter.'),
     ).toBeVisible();
-    await expect(
-      buyer.getByRole('heading', {
-        name: 'BTC 100.24925 / US$ 97500.00',
-        exact: true,
-      }),
-    ).toBeVisible();
+    await expectWalletBalances(
+      buyer,
+      ['100.28905', '0.00', '100.28905'],
+      ['97140.00', '0.00', '97140.00'],
+    );
 
     await buy.getByLabel('Amount (BTC)').fill('100');
     await buy.getByLabel('Price (USD)').fill('10000');
     await buy.getByRole('button', { name: 'Submit buy order' }).click();
     await expect(buy.getByRole('alert')).toHaveText('Insufficient USD balance');
     await expect(buy.getByLabel('Amount (BTC)')).toHaveValue('100');
-    await expect(
-      buyer.getByRole('heading', {
-        name: 'BTC 100.24925 / US$ 97500.00',
-        exact: true,
-      }),
-    ).toBeVisible();
+    await expectWalletBalances(
+      buyer,
+      ['100.28905', '0.00', '100.28905'],
+      ['97140.00', '0.00', '97140.00'],
+    );
 
     for (const page of [seller, buyer]) {
       await page.getByRole('button', { name: 'Sign out', exact: true }).click();

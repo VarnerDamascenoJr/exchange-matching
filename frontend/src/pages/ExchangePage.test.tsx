@@ -129,7 +129,10 @@ describe('exchange financial precision', () => {
   it('displays exact balances, stats, book levels, orders, matches and fees', async () => {
     renderExchange();
 
-    expect(await screen.findByText(`BTC 0.00000001 / US$ ${largeValue}`)).toBeVisible();
+    await waitFor(() => expect(screen.getByLabelText('USD available balance')).toHaveTextContent(`US$ ${largeValue}`));
+    expect(screen.getByLabelText('USD total balance')).toHaveTextContent(`US$ ${largeValue}`);
+    expect(screen.getByLabelText('BTC available balance')).toHaveTextContent('BTC 0.00000001');
+    expect(screen.getByLabelText('BTC total balance')).toHaveTextContent('BTC 0.00000001');
     expect(screen.getByRole('heading', { name: `US$ ${largeValue}` })).toBeVisible();
     expect(screen.getByRole('heading', { name: 'BTC 0.00000001' })).toBeVisible();
     expect(screen.getByRole('heading', { name: 'US$ 0.00', level: 5 })).toBeVisible();

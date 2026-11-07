@@ -2,6 +2,7 @@ import { Box, Card, CardContent, Chip, Stack, Typography } from '@mui/material';
 import { MarketStatsSummary } from '../../../types/market';
 import { UserProfile, WalletSummary } from '../../../types/auth';
 import { formatBtc, formatUsd } from '../../../utils/format';
+import { WalletBalancesCard } from '../../auth/components/WalletBalancesCard';
 
 type StatsGridProps = {
   stats: MarketStatsSummary;
@@ -46,13 +47,6 @@ export function StatsGrid({ stats, user, wallet }: StatsGridProps) {
       value: formatUsd(stats.bestAsk),
       tone: 'secondary.main',
     },
-    {
-      label: user ? `${user.username} balances` : 'Your balances',
-      value: `${formatBtc(wallet?.availableBtc ?? null)} / ${formatUsd(
-        wallet?.availableUsd ?? null,
-      )}`,
-      tone: 'text.primary',
-    },
   ];
 
   return (
@@ -67,6 +61,7 @@ export function StatsGrid({ stats, user, wallet }: StatsGridProps) {
         },
       }}
     >
+      <WalletBalancesCard user={user} wallet={wallet} />
       {cards.map((card) => (
         <Card key={card.label} elevation={0} sx={{ minWidth: 0 }}>
           <CardContent>
