@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
+import { expectWalletBalances } from './support/wallet.js';
 
 const orderForm = (page: Page, side: 'buy' | 'sell') =>
   page.locator('form').filter({
@@ -69,6 +70,17 @@ test('mobile forms fit the page while populated tables scroll within their cards
         .getByRole('cell', { name: 'TAKER', exact: true }),
     ).toBeVisible();
 
+    await expectWalletBalances(
+      seller,
+      ['99.75', '0.15', '99.90'],
+      ['102985.00', '0.00', '102985.00'],
+    );
+    await expectWalletBalances(
+      buyer,
+      ['100.0997', '0.00', '100.0997'],
+      ['97000.00', '0.00', '97000.00'],
+    );
+
     for (const width of [390, 320, 768, 1600]) {
       for (const page of [seller, buyer]) {
         await page.setViewportSize({ width, height: 844 });
@@ -76,6 +88,19 @@ test('mobile forms fit the page while populated tables scroll within their cards
         expect(
           await page.evaluate(() => document.documentElement.scrollWidth),
         ).toBeLessThanOrEqual(width + 1);
+
+        await expectWithinPage(
+          page.getByRole('region', { name: 'Wallet balances', exact: true }),
+          width,
+        );
+        if (page === seller && (width === 320 || width === 1600)) {
+          await testInfo.attach(`wallet-${width}`, {
+            body: await page
+              .getByRole('region', { name: 'Wallet balances', exact: true })
+              .screenshot(),
+            contentType: 'image/png',
+          });
+        }
 
         for (const side of ['buy', 'sell'] as const) {
           const form = orderForm(page, side);
@@ -117,6 +142,11 @@ test('mobile forms fit the page while populated tables scroll within their cards
     await expect(
       active.getByText('No active orders for this filter.'),
     ).toBeVisible();
+    await expectWalletBalances(
+      seller,
+      ['99.90', '0.00', '99.90'],
+      ['102985.00', '0.00', '102985.00'],
+    );
     expect(
       await seller.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(viewport.width + 1);
